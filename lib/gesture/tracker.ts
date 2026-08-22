@@ -188,7 +188,7 @@ function getViewportRect(
   if (
     cachedViewport &&
     now -
-      cachedViewport.time 
+      cachedViewport.time<
       100 &&
     cachedViewport.width ===
       element.width &&
@@ -1057,4 +1057,4 @@ export class YuakeGestureTracker {
     cachedViewport =
       null;
   }
-    }
+}
