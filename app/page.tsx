@@ -35,6 +35,9 @@ export default function Home() {
   const videoRef =
     useRef<HTMLVideoElement>(null);
 
+  const cursorRef =
+    useRef<HTMLDivElement>(null);
+
   const streamRef =
     useRef<MediaStream | null>(null);
 
@@ -44,11 +47,11 @@ export default function Home() {
   const animationRef =
     useRef<number | null>(null);
 
-  const videoFrameCallbackRef =
-    useRef<number | null>(null);
-
   const runningRef =
     useRef(false);
+
+  const lastUiUpdateRef =
+    useRef(0);
 
   const [status, setStatus] =
     useState<Status>("idle");
@@ -64,48 +67,78 @@ export default function Home() {
   const [showDebug, setShowDebug] =
     useState(true);
 
+  const updateCursor =
+    useCallback(
+      (hand: GestureHand | null) => {
+        const cursor =
+          cursorRef.current;
+
+        if (!cursor) {
+          return;
+        }
+
+        if (!hand) {
+          cursor.style.opacity = "0";
+          return;
+        }
+
+        /*
+         * The tracker now gives us the
+         * actual fingertip position.
+         *
+         * Move the DOM element directly.
+         * React does NOT need to render
+         * another component for every frame.
+         */
+        cursor.style.left =
+          `${hand.cursor.x * 100}%`;
+
+        cursor.style.top =
+          `${hand.cursor.y * 100}%`;
+
+        cursor.style.opacity = "1";
+
+        cursor.classList.toggle(
+          "pinch",
+          hand.pinch
+        );
+
+        const label =
+          cursor.querySelector(
+            ".cursorLabel"
+          );
+
+        if (label) {
+          label.textContent =
+            hand.pinch
+              ? "GRAB"
+              : hand.pose.toUpperCase();
+        }
+      },
+      []
+    );
+
   const stopCamera =
     useCallback(() => {
-      runningRef.current = false;
+      runningRef.current =
+        false;
 
       if (
-        animationRef.current !== null
+        animationRef.current !==
+        null
       ) {
         cancelAnimationFrame(
           animationRef.current
         );
 
-        animationRef.current = null;
+        animationRef.current =
+          null;
       }
-
-      const video = videoRef.current;
-
-      if (
-        video &&
-        videoFrameCallbackRef.current !== null &&
-        "cancelVideoFrameCallback" in video
-      ) {
-        try {
-          (
-            video as HTMLVideoElement & {
-              cancelVideoFrameCallback: (
-                handle: number
-              ) => void;
-            }
-          ).cancelVideoFrameCallback(
-            videoFrameCallbackRef.current
-          );
-        } catch {
-          // Some browsers may not expose cancellation.
-        }
-      }
-
-      videoFrameCallbackRef.current =
-        null;
 
       trackerRef.current?.close();
 
-      trackerRef.current = null;
+      trackerRef.current =
+        null;
 
       streamRef.current
         ?.getTracks()
@@ -113,21 +146,30 @@ export default function Home() {
           track.stop();
         });
 
-      streamRef.current = null;
+      streamRef.current =
+        null;
 
-      if (video) {
-        video.pause();
-        video.srcObject = null;
+      if (videoRef.current) {
+        videoRef.current.pause();
+        videoRef.current.srcObject =
+          null;
       }
 
-      setFrame(EMPTY_FRAME);
-      setStatus("idle");
-    }, []);
+      updateCursor(null);
 
-  const processFrame =
+      setFrame(
+        EMPTY_FRAME
+      );
+
+      setStatus("idle");
+    }, [updateCursor]);
+
+  const processLoop =
     useCallback(
       (timestamp: number) => {
-        if (!runningRef.current) {
+        if (
+          !runningRef.current
+        ) {
           return;
         }
 
@@ -143,17 +185,56 @@ export default function Home() {
           video.readyState <
             HTMLMediaElement.HAVE_CURRENT_DATA
         ) {
+          animationRef.current =
+            requestAnimationFrame(
+              processLoop
+            );
+
           return;
         }
 
         try {
+          /*
+           * Process every animation frame.
+           *
+           * The old code intentionally
+           * discarded frames to stay around
+           * 30 FPS. That creates visible
+           * tracking latency.
+           */
           const result =
             tracker.process(
               video,
               timestamp
             );
 
-          setFrame(result);
+          /*
+           * Critical:
+           *
+           * Cursor movement happens
+           * immediately and independently
+           * from React state.
+           */
+          updateCursor(
+            result.primaryHand
+          );
+
+          /*
+           * UI/debug information does NOT
+           * need 60+ React renders per second.
+           *
+           * Keep it around 12 FPS.
+           */
+          if (
+            timestamp -
+              lastUiUpdateRef.current >=
+            80
+          ) {
+            lastUiUpdateRef.current =
+              timestamp;
+
+            setFrame(result);
+          }
         } catch (err) {
           console.error(err);
 
@@ -163,74 +244,30 @@ export default function Home() {
               : String(err)
           );
 
-          runningRef.current = false;
-
           setStatus("error");
+
+          stopCamera();
+
+          return;
         }
-      },
-      []
-    );
 
-  const scheduleVideoFrame =
-    useCallback(() => {
-      if (!runningRef.current) {
-        return;
-      }
-
-      const video =
-        videoRef.current;
-
-      if (!video) {
-        return;
-      }
-
-      const extendedVideo =
-        video as HTMLVideoElement & {
-          requestVideoFrameCallback?: (
-            callback: (
-              now: number,
-              metadata: VideoFrameCallbackMetadata
-            ) => void
-          ) => number;
-        };
-
-      if (
-        typeof extendedVideo.requestVideoFrameCallback ===
-        "function"
-      ) {
-        videoFrameCallbackRef.current =
-          extendedVideo.requestVideoFrameCallback(
-            (now) => {
-              if (!runningRef.current) {
-                return;
-              }
-
-              processFrame(now);
-
-              scheduleVideoFrame();
-            }
+        animationRef.current =
+          requestAnimationFrame(
+            processLoop
           );
-
-        return;
-      }
-
-      animationRef.current =
-        requestAnimationFrame(
-          now => {
-            if (!runningRef.current) {
-              return;
-            }
-
-            processFrame(now);
-            scheduleVideoFrame();
-          }
-        );
-    }, [processFrame]);
+      },
+      [
+        stopCamera,
+        updateCursor
+      ]
+    );
 
   const startCamera =
     useCallback(
       async () => {
-        if (runningRef.current) {
+        if (
+          runningRef.current
+        ) {
           return;
         }
 
@@ -246,21 +283,16 @@ export default function Home() {
             );
           }
 
-          /*
-           * REAR CAMERA
-           *
-           * `environment` asks the browser
-           * for the outward-facing camera.
-           *
-           * No mirror is applied to the
-           * actual camera feed.
-           */
           const stream =
             await navigator.mediaDevices.getUserMedia(
               {
                 video: {
+                  /*
+                   * REAR CAMERA
+                   */
                   facingMode: {
-                    ideal: "environment"
+                    ideal:
+                      "environment"
                   },
 
                   width: {
@@ -293,14 +325,12 @@ export default function Home() {
             );
           }
 
-          video.srcObject = stream;
+          video.srcObject =
+            stream;
 
           /*
-           * Rear camera footage should NOT
+           * Rear camera should not
            * be horizontally mirrored.
-           *
-           * This inline style intentionally
-           * overrides the old CSS mirror.
            */
           video.style.transform =
             "none";
@@ -315,15 +345,23 @@ export default function Home() {
 
           await tracker.initialize();
 
-          runningRef.current = true;
+          runningRef.current =
+            true;
+
+          lastUiUpdateRef.current =
+            performance.now();
 
           setStatus("live");
 
-          scheduleVideoFrame();
+          animationRef.current =
+            requestAnimationFrame(
+              processLoop
+            );
         } catch (err) {
           console.error(err);
 
-          runningRef.current = false;
+          runningRef.current =
+            false;
 
           streamRef.current
             ?.getTracks()
@@ -331,18 +369,8 @@ export default function Home() {
               track.stop();
             });
 
-          streamRef.current = null;
-
-          if (videoRef.current) {
-            videoRef.current.srcObject =
-              null;
-
-            videoRef.current.style.transform =
-              "none";
-          }
-
-          trackerRef.current?.close();
-          trackerRef.current = null;
+          streamRef.current =
+            null;
 
           setError(
             err instanceof Error
@@ -353,7 +381,7 @@ export default function Home() {
           setStatus("error");
         }
       },
-      [scheduleVideoFrame]
+      [processLoop]
     );
 
   useEffect(() => {
@@ -364,9 +392,6 @@ export default function Home() {
 
   const primary =
     frame.primaryHand;
-
-  const gestureLabel =
-    primary?.pose ?? "none";
 
   const pinchPercent =
     Math.round(
@@ -431,7 +456,9 @@ export default function Home() {
 
           <button
             className="enterButton"
-            onClick={startCamera}
+            onClick={
+              startCamera
+            }
           >
             <span>
               ENTER REALITY
@@ -486,7 +513,10 @@ export default function Home() {
             ) : (
               <>
                 <span>
-                  {gestureLabel.toUpperCase()}
+                  {(
+                    primary?.pose ??
+                    "none"
+                  ).toUpperCase()}
                 </span>
 
                 <h2>
@@ -513,11 +543,21 @@ export default function Home() {
             )}
           </section>
 
-          {primary && (
-            <HandCursor
-              hand={primary}
-            />
-          )}
+          <div
+            ref={cursorRef}
+            className="handCursor"
+            style={{
+              opacity: 0
+            }}
+          >
+            <div className="cursorCore" />
+
+            <div className="cursorRing" />
+
+            <div className="cursorLabel">
+              POINT
+            </div>
+          </div>
 
           <footer className="bottomBar">
             <div>
@@ -537,7 +577,8 @@ export default function Home() {
             <button
               onClick={() =>
                 setShowDebug(
-                  value => !value
+                  value =>
+                    !value
                 )
               }
             >
@@ -547,7 +588,9 @@ export default function Home() {
             </button>
 
             <button
-              onClick={stopCamera}
+              onClick={
+                stopCamera
+              }
             >
               EXIT
             </button>
@@ -588,38 +631,6 @@ export default function Home() {
         </section>
       )}
     </main>
-  );
-}
-
-function HandCursor({
-  hand
-}: {
-  hand: GestureHand;
-}) {
-  const style = {
-    left: `${hand.cursor.x * 100}%`,
-    top: `${hand.cursor.y * 100}%`
-  };
-
-  return (
-    <div
-      className={
-        hand.pinch
-          ? "handCursor pinch"
-          : "handCursor"
-      }
-      style={style}
-    >
-      <div className="cursorCore" />
-
-      <div className="cursorRing" />
-
-      <div className="cursorLabel">
-        {hand.pinch
-          ? "GRAB"
-          : hand.pose.toUpperCase()}
-      </div>
-    </div>
   );
 }
 
@@ -728,4 +739,4 @@ function DebugPanel({
       </div>
     </aside>
   );
-    }
+}
