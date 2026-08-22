@@ -7,6 +7,7 @@ body {
   width: 100%;
   height: 100%;
   margin: 0;
+  padding: 0;
   background: #000;
   color: #fff;
   overflow: hidden;
@@ -23,6 +24,11 @@ button {
   font: inherit;
 }
 
+button,
+a {
+  -webkit-tap-highlight-color: transparent;
+}
+
 .yuake {
   position: relative;
   width: 100vw;
@@ -31,31 +37,45 @@ button {
   background: #000;
 }
 
+/* CAMERA */
+
 .camera {
   position: absolute;
   inset: 0;
+  z-index: 0;
+  display: block;
   width: 100%;
   height: 100%;
   object-fit: cover;
   transform: scaleX(-1);
-  opacity: 0;
-  transition:
-    opacity 800ms ease;
+  opacity: 1;
+  background: #000;
 }
 
-.yuake:has(.camera[srcObject]) .camera {
-  opacity: 1;
-}
+/*
+ * The video element itself owns the camera stream
+ * through video.srcObject in JavaScript.
+ *
+ * Do NOT use a CSS selector such as:
+ *
+ * .camera[srcObject]
+ *
+ * srcObject is a JavaScript property, not an HTML
+ * attribute.
+ */
+
+/* CAMERA VISUAL LAYER */
 
 .cameraShade {
   position: absolute;
   inset: 0;
+  z-index: 2;
   pointer-events: none;
   background:
     radial-gradient(
       circle at center,
       transparent 0%,
-      rgba(0, 0, 0, 0.12) 45%,
+      rgba(0, 0, 0, 0.08) 42%,
       rgba(0, 0, 0, 0.72) 100%
     );
 }
@@ -64,11 +84,11 @@ button {
   content: "";
   position: absolute;
   inset: 0;
-  opacity: 0.12;
+  opacity: 0.1;
+  pointer-events: none;
   background-image:
     linear-gradient(
-      rgba(255, 255, 255, 0.08)
-        1px,
+      rgba(255, 255, 255, 0.08) 1px,
       transparent 1px
     );
   background-size:
@@ -76,43 +96,41 @@ button {
   mix-blend-mode: screen;
 }
 
-.topBar,
-.bottomBar {
-  position: absolute;
-  z-index: 20;
-  left: 24px;
-  right: 24px;
-  display: flex;
-  align-items: center;
-}
+/* TOP UI */
 
 .topBar {
+  position: absolute;
+  z-index: 20;
   top: 22px;
-  justify-content: space-between;
-}
+  left: 24px;
+  right: 24px;
 
-.bottomBar {
-  bottom: 22px;
-  gap: 22px;
-  font-size: 8px;
-  letter-spacing: 0.22em;
-  color: rgba(255, 255, 255, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+
+  pointer-events: none;
 }
 
 .brand {
   font-size: 14px;
-  letter-spacing: 0.32em;
+  line-height: 1;
   font-weight: 400;
+  letter-spacing: 0.32em;
+  color: #fff;
 }
 
 .status {
   position: absolute;
   left: 50%;
   transform: translateX(-50%);
+
   display: flex;
   align-items: center;
   gap: 8px;
+
   font-size: 8px;
+  line-height: 1;
   letter-spacing: 0.25em;
   color: rgba(255, 255, 255, 0.55);
 }
@@ -120,6 +138,7 @@ button {
 .statusDot {
   width: 5px;
   height: 5px;
+  flex: 0 0 5px;
   border-radius: 50%;
   background: #666;
 }
@@ -131,30 +150,20 @@ button {
     rgba(255, 255, 255, 0.9);
 }
 
-.bottomBar button {
-  border: 0;
-  background: transparent;
-  color: rgba(255, 255, 255, 0.45);
-  padding: 0;
-  cursor: pointer;
-  font-size: 8px;
-  letter-spacing: 0.22em;
-}
-
-.bottomBar button:hover {
-  color: #fff;
-}
+/* INTRO */
 
 .intro,
 .loading,
 .errorScreen {
   position: absolute;
-  z-index: 10;
   inset: 0;
+  z-index: 10;
+
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  flex-direction: column;
+
   text-align: center;
 }
 
@@ -164,28 +173,34 @@ button {
 
 .introEyebrow {
   margin-bottom: 18px;
+
   font-size: 8px;
+  line-height: 1;
   letter-spacing: 0.42em;
   color: rgba(255, 255, 255, 0.42);
 }
 
 .intro h1 {
   margin: 0;
+
   font-size: clamp(
     64px,
     14vw,
     170px
   );
+
   line-height: 0.8;
-  letter-spacing: -0.055em;
   font-weight: 200;
+  letter-spacing: -0.055em;
 }
 
 .intro p {
   margin:
     28px 0
     36px;
+
   font-size: 10px;
+  line-height: 1;
   letter-spacing: 0.25em;
   color: rgba(255, 255, 255, 0.45);
 }
@@ -193,21 +208,33 @@ button {
 .enterButton {
   width: 220px;
   height: 52px;
-  padding: 0 18px;
+
   display: flex;
   align-items: center;
   justify-content: space-between;
-  border: 1px solid
+
+  padding: 0 18px;
+
+  border:
+    1px solid
     rgba(255, 255, 255, 0.35);
-  background: rgba(0, 0, 0, 0.2);
+
+  background:
+    rgba(0, 0, 0, 0.2);
+
   color: #fff;
+
   cursor: pointer;
+
   font-size: 8px;
+  line-height: 1;
   letter-spacing: 0.25em;
+
   transition:
     background 180ms ease,
     color 180ms ease,
-    border 180ms ease;
+    border-color 180ms ease,
+    transform 180ms ease;
 }
 
 .enterButton:hover {
@@ -216,30 +243,46 @@ button {
   border-color: #fff;
 }
 
+.enterButton:active {
+  transform: scale(0.98);
+}
+
 .introNote {
   position: absolute;
   bottom: 22px;
+
   font-size: 8px;
+  line-height: 1;
   letter-spacing: 0.14em;
   color: rgba(255, 255, 255, 0.25);
 }
+
+/* CENTER TRACKING MESSAGE */
 
 .centerMessage {
   position: absolute;
   z-index: 8;
   left: 50%;
   top: 50%;
+
   transform:
     translate(
       -50%,
       -50%
     );
+
   text-align: center;
+
   pointer-events: none;
+
+  user-select: none;
 }
 
 .centerMessage span {
+  display: block;
+
   font-size: 8px;
+  line-height: 1;
   letter-spacing: 0.4em;
   color: rgba(255, 255, 255, 0.4);
 }
@@ -248,48 +291,68 @@ button {
   margin:
     14px 0
     12px;
+
   font-size: clamp(
     30px,
     6vw,
     80px
   );
+
+  line-height: 0.9;
   font-weight: 200;
   letter-spacing: -0.04em;
 }
 
 .centerMessage p {
   margin: 0;
+
   font-size: 9px;
+  line-height: 1;
   letter-spacing: 0.18em;
   color: rgba(255, 255, 255, 0.35);
 }
 
+/* HAND CURSOR */
+
 .handCursor {
   position: absolute;
   z-index: 15;
+
   width: 1px;
   height: 1px;
+
   transform:
     translate(
       -50%,
       -50%
     );
+
   pointer-events: none;
+
+  will-change:
+    left,
+    top,
+    transform;
 }
 
 .cursorCore {
   position: absolute;
   left: 50%;
   top: 50%;
+
   width: 9px;
   height: 9px;
+
   transform:
     translate(
       -50%,
       -50%
     );
+
   border-radius: 50%;
+
   background: #fff;
+
   box-shadow:
     0 0 18px
     rgba(255, 255, 255, 0.9);
@@ -299,80 +362,169 @@ button {
   position: absolute;
   left: 50%;
   top: 50%;
+
   width: 42px;
   height: 42px;
+
   transform:
     translate(
       -50%,
       -50%
     );
-  border: 1px solid
+
+  border:
+    1px solid
     rgba(255, 255, 255, 0.6);
+
   border-radius: 50%;
+
   transition:
     width 150ms ease,
     height 150ms ease,
     border-color 150ms ease;
 }
 
-.handCursor.pinch
-  .cursorRing {
+.handCursor.pinch .cursorRing {
   width: 26px;
   height: 26px;
+
   border-color: #fff;
+
+  box-shadow:
+    0 0 18px
+    rgba(255, 255, 255, 0.35);
 }
 
 .cursorLabel {
   position: absolute;
   left: 30px;
   top: -5px;
+
   white-space: nowrap;
+
   font-size: 7px;
+  line-height: 1;
   letter-spacing: 0.2em;
-  color: rgba(255, 255, 255, 0.65);
+
+  color:
+    rgba(255, 255, 255, 0.65);
 }
+
+/* DEBUG */
 
 .debug {
   position: absolute;
   z-index: 25;
+
   top: 70px;
   right: 24px;
+
   width: 180px;
+
   padding: 14px;
+
   border:
     1px solid
     rgba(255, 255, 255, 0.14);
+
   background:
     rgba(0, 0, 0, 0.55);
+
   backdrop-filter:
+    blur(16px);
+
+  -webkit-backdrop-filter:
     blur(16px);
 }
 
 .debugTitle {
   margin-bottom: 12px;
+
   font-size: 7px;
+  line-height: 1;
   letter-spacing: 0.25em;
-  color: rgba(255, 255, 255, 0.4);
+
+  color:
+    rgba(255, 255, 255, 0.4);
 }
 
 .debugRow {
   display: flex;
+  align-items: center;
   justify-content: space-between;
+
   padding: 6px 0;
+
   border-top:
     1px solid
     rgba(255, 255, 255, 0.06);
+
   font-size: 7px;
+  line-height: 1;
   letter-spacing: 0.12em;
 }
 
 .debugRow span {
-  color: rgba(255, 255, 255, 0.35);
+  color:
+    rgba(255, 255, 255, 0.35);
 }
 
 .debugRow strong {
   font-weight: 400;
+  color: #fff;
 }
+
+/* BOTTOM UI */
+
+.bottomBar {
+  position: absolute;
+  z-index: 20;
+
+  left: 24px;
+  right: 24px;
+  bottom: 22px;
+
+  display: flex;
+  align-items: center;
+  gap: 22px;
+
+  font-size: 8px;
+  line-height: 1;
+  letter-spacing: 0.22em;
+
+  color:
+    rgba(255, 255, 255, 0.5);
+}
+
+.bottomBar button {
+  padding: 0;
+
+  border: 0;
+
+  background: transparent;
+
+  color:
+    rgba(255, 255, 255, 0.45);
+
+  cursor: pointer;
+
+  font-size: 8px;
+  line-height: 1;
+  letter-spacing: 0.22em;
+
+  transition:
+    color 150ms ease;
+}
+
+.bottomBar button:hover {
+  color: #fff;
+}
+
+.bottomBar button:active {
+  color: #fff;
+}
+
+/* LOADING */
 
 .loading {
   gap: 18px;
@@ -381,17 +533,21 @@ button {
 .loadingRing {
   width: 38px;
   height: 38px;
+
   border:
     1px solid
     rgba(255, 255, 255, 0.2);
+
   border-top-color: #fff;
+
   border-radius: 50%;
+
   animation:
     spin 800ms
     linear infinite;
 }
 
-.loading div:last-child {
+.loading > div:last-child {
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -399,15 +555,20 @@ button {
 
 .loading strong {
   font-size: 9px;
+  line-height: 1;
   letter-spacing: 0.3em;
   font-weight: 400;
 }
 
 .loading span {
   font-size: 8px;
-  color: rgba(255, 255, 255, 0.35);
+  line-height: 1;
   letter-spacing: 0.1em;
+  color:
+    rgba(255, 255, 255, 0.35);
 }
+
+/* ERROR */
 
 .errorScreen {
   padding: 24px;
@@ -415,50 +576,84 @@ button {
 
 .errorCode {
   font-size: 8px;
+  line-height: 1;
   letter-spacing: 0.4em;
-  color: rgba(255, 255, 255, 0.35);
+
+  color:
+    rgba(255, 255, 255, 0.35);
 }
 
 .errorScreen h2 {
   margin:
     18px 0
     26px;
+
   font-size: clamp(
     38px,
     8vw,
     90px
   );
-  font-weight: 200;
+
   line-height: 0.9;
+  font-weight: 200;
 }
 
 .errorScreen pre {
-  max-width: min(
+  width: min(
     600px,
     90vw
   );
+
+  max-height: 180px;
+
+  margin: 0;
+
   padding: 14px;
+
   border:
     1px solid
     rgba(255, 255, 255, 0.1);
-  color: rgba(255, 255, 255, 0.5);
+
+  background:
+    rgba(0, 0, 0, 0.35);
+
+  color:
+    rgba(255, 255, 255, 0.5);
+
+  font-family:
+    monospace;
+
   font-size: 8px;
   line-height: 1.6;
+
   white-space: pre-wrap;
+
   overflow: auto;
 }
 
 .errorScreen button {
   margin-top: 12px;
-  padding: 12px 20px;
+
+  padding:
+    12px 20px;
+
   border:
     1px solid
     rgba(255, 255, 255, 0.3);
+
   background: transparent;
+
   color: #fff;
+
   cursor: pointer;
+
   font-size: 8px;
+  line-height: 1;
   letter-spacing: 0.2em;
+
+  transition:
+    background 150ms ease,
+    color 150ms ease;
 }
 
 .errorScreen button:hover {
@@ -466,21 +661,73 @@ button {
   color: #000;
 }
 
+/* ANIMATION */
+
 @keyframes spin {
+  from {
+    transform:
+      rotate(0deg);
+  }
+
   to {
-    transform: rotate(360deg);
+    transform:
+      rotate(360deg);
   }
 }
 
+/* MOBILE */
+
 @media (max-width: 700px) {
-  .topBar,
-  .bottomBar {
+  .topBar {
+    top: 16px;
     left: 15px;
     right: 15px;
   }
 
+  .bottomBar {
+    left: 15px;
+    right: 15px;
+    bottom: 16px;
+
+    gap: 12px;
+
+    flex-wrap: wrap;
+  }
+
+  .brand {
+    font-size: 12px;
+  }
+
+  .status {
+    display: none;
+  }
+
+  .intro {
+    padding:
+      20px;
+  }
+
   .intro h1 {
     font-size: 68px;
+  }
+
+  .intro p {
+    margin:
+      24px 0
+      30px;
+
+    font-size: 8px;
+  }
+
+  .enterButton {
+    width: min(
+      220px,
+      80vw
+    );
+  }
+
+  .centerMessage {
+    width: 90vw;
   }
 
   .centerMessage h2 {
@@ -491,14 +738,30 @@ button {
     top: auto;
     right: 15px;
     bottom: 55px;
+
     width: 160px;
   }
 
-  .bottomBar {
-    gap: 12px;
+  .cursorLabel {
+    left: 24px;
   }
 
-  .status {
-    display: none;
+  .introNote {
+    bottom: 16px;
+
+    width: 90vw;
+
+    font-size: 7px;
   }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .enterButton,
+  .cursorRing {
+    transition: none;
   }
+
+  .loadingRing {
+    animation-duration: 1.6s;
+  }
+      }
