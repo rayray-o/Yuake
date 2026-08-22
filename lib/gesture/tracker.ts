@@ -37,51 +37,66 @@ import type {
   Point3D
 } from "./types";
 
-type CursorPoint = {
+type Point2D = {
   x: number;
   y: number;
 };
 
 type HandRuntime = {
   filter: OneEuroPointFilter;
+
   classifier: GestureClassifier;
 
-  previousCursor: CursorPoint;
+  previousRaw: Point2D;
+
+  previousCursor: Point2D;
 
   previousTimestamp: number;
 
-  velocity: CursorPoint;
+  velocity: Point2D;
 
   lastSeen: number;
 
   initialized: boolean;
 };
 
-const INDEX_TIP = 8;
+const INDEX_TIP =
+  8;
 
-const MIN_DT_SECONDS = 0.001;
+const MIN_DT =
+  0.001;
 
-const MAX_DT_SECONDS = 0.1;
-
-/*
- * Prediction is intentionally tiny.
- *
- * Too much prediction makes a cursor
- * overshoot the actual fingertip.
- *
- * The goal is to compensate for the
- * small latency introduced by camera
- * capture + MediaPipe + filtering.
- */
-const MIN_PREDICTION_SECONDS = 0.006;
-
-const MAX_PREDICTION_SECONDS = 0.024;
+const MAX_DT =
+  0.100;
 
 /*
- * Prevent one noisy landmark frame
- * from producing a huge cursor jump.
+ * At low speed we want the
+ * filtered position.
+ *
+ * At high speed we want the
+ * raw fingertip.
+ *
+ * This is intentionally NOT
+ * prediction.
+ *
+ * Prediction can make the cursor
+ * lead the fingertip and feel wrong.
  */
-const MAX_VELOCITY = 8;
+const RAW_BLEND_START =
+  0.35;
+
+const RAW_BLEND_FULL =
+  2.2;
+
+/*
+ * Small dead-zone for tiny
+ * MediaPipe landmark noise.
+ *
+ * This is applied only to
+ * very slow movement.
+ */
+const MICRO_MOVEMENT =
+  0.0012;
 
 function clamp(
   value: number,
@@ -90,7 +105,10 @@ function clamp(
 ): number {
   return Math.max(
     min,
-    Math.min(max, value)
+    Math.min(
+      max,
+      value
+    )
   );
 }
 
@@ -101,6 +119,18 @@ function clamp01(
     value,
     0,
     1
+  );
+}
+
+function lerp(
+  a: number,
+  b: number,
+  amount: number
+): number {
+  return (
+    a +
+    (b - a) *
+      amount
   );
 }
 
@@ -145,60 +175,35 @@ function handednessFromResult(
   return "Unknown";
 }
 
-function limitVelocity(
-  velocity: CursorPoint
-): CursorPoint {
-  const speed =
-    Math.hypot(
-      velocity.x,
-      velocity.y
-    );
-
-  if (
-    !Number.isFinite(speed) ||
-    speed <= MAX_VELOCITY
-  ) {
-    return velocity;
-  }
-
-  const scale =
-    MAX_VELOCITY /
-    speed;
-
-  return {
-    x: velocity.x * scale,
-    y: velocity.y * scale
-  };
-}
-
-function calculateAdaptivePrediction(
+function movementBlend(
   speed: number
 ): number {
   /*
-   * Slow movement:
-   * almost no prediction.
+   * speed is normalized
+   * screen-space units / second.
    *
-   * Fast movement:
-   * slightly more prediction.
+   * The transition is smooth:
+   *
+   * 0.00 -> filtered
+   * 0.35 -> begin trusting raw
+   * 2.20 -> almost completely raw
    */
-  const normalizedSpeed =
-    clamp01(
-      speed / 3
-    );
-
-  return (
-    MIN_PREDICTION_SECONDS +
+  return clamp01(
     (
-      MAX_PREDICTION_SECONDS -
-      MIN_PREDICTION_SECONDS
-    ) *
-      normalizedSpeed
+      speed -
+      RAW_BLEND_START
+    ) /
+    (
+      RAW_BLEND_FULL -
+      RAW_BLEND_START
+    )
   );
 }
 
 export class YuakeGestureTracker {
   private detector:
-    HandLandmarker | null = null;
+    HandLandmarker | null =
+      null;
 
   private runtime =
     new Map<
@@ -216,7 +221,9 @@ export class YuakeGestureTracker {
     0;
 
   async initialize() {
-    if (this.initialized) {
+    if (
+      this.initialized
+    ) {
       return;
     }
 
@@ -233,7 +240,8 @@ export class YuakeGestureTracker {
             modelAssetPath:
               HAND_MODEL_URL,
 
-            delegate: "GPU"
+            delegate:
+              "GPU"
           },
 
           runningMode:
@@ -261,7 +269,9 @@ export class YuakeGestureTracker {
     video: HTMLVideoElement,
     timestamp: number
   ): GestureFrame {
-    if (!this.detector) {
+    if (
+      !this.detector
+    ) {
       throw new Error(
         "Gesture tracker has not been initialized."
       );
@@ -270,15 +280,11 @@ export class YuakeGestureTracker {
     const start =
       performance.now();
 
-    /*
-     * MediaPipe VIDEO mode expects
-     * a monotonically increasing
-     * timestamp in milliseconds.
-     */
     const safeTimestamp =
       Math.max(
         timestamp,
-        this.lastFrameTime + 0.001
+        this.lastFrameTime +
+          0.001
       );
 
     const result =
@@ -315,7 +321,7 @@ export class YuakeGestureTracker {
         ),
 
       frameTime:
-        this.lastFrameTime,
+        safeTimestamp,
 
       processingTime:
         this.processingTime
@@ -336,11 +342,14 @@ export class YuakeGestureTracker {
       index++
     ) {
       const raw =
-        result.landmarks[index];
+        result.landmarks[
+          index
+        ];
 
       if (
         !raw ||
-        raw.length < 21
+        raw.length <
+          21
       ) {
         continue;
       }
@@ -372,49 +381,49 @@ export class YuakeGestureTracker {
           index
         );
 
-      /*
-       * Handedness gives us a stable
-       * identity when available.
-       *
-       * Unknown hands use the result
-       * index as a temporary identity.
-       */
       const id =
-        handedness === "Unknown"
+        handedness ===
+        "Unknown"
           ? `hand-${index}`
           : handedness;
 
       let state =
-        this.runtime.get(id);
+        this.runtime.get(
+          id
+        );
 
       if (!state) {
         state = {
-          /*
-           * Slightly more responsive
-           * One-Euro configuration.
-           *
-           * The adaptive beta allows
-           * fast motion to pass through
-           * without making slow motion
-           * noisy.
-           */
           filter:
-            new OneEuroPointFilter({
-              minCutoff:
-                FILTER_MIN_CUTOFF,
+            new OneEuroPointFilter(
+              {
+                /*
+                 * Low enough to remove
+                 * camera jitter.
+                 *
+                 * Fast movement is
+                 * handled by the
+                 * raw/filtered blend
+                 * below.
+                 */
+                minCutoff:
+                  FILTER_MIN_CUTOFF,
 
-              beta:
-                Math.max(
+                beta:
                   FILTER_BETA,
-                  0.055
-                ),
 
-              dCutoff:
-                FILTER_D_CUTOFF
-            }),
+                dCutoff:
+                  FILTER_D_CUTOFF
+              }
+            ),
 
           classifier:
             new GestureClassifier(),
+
+          previousRaw: {
+            x: 0.5,
+            y: 0.5
+          },
 
           previousCursor: {
             x: 0.5,
@@ -432,7 +441,8 @@ export class YuakeGestureTracker {
           lastSeen:
             timestamp,
 
-          initialized: false
+          initialized:
+            false
         };
 
         this.runtime.set(
@@ -445,47 +455,43 @@ export class YuakeGestureTracker {
         timestamp;
 
       /*
-       * INDEX FINGERTIP
+       * THE ACTUAL FINGERTIP.
        *
-       * Landmark 8 is the actual
-       * index fingertip.
-       *
-       * The old implementation used
-       * the midpoint between landmarks
-       * 4 and 8, which meant the cursor
-       * was never actually attached to
-       * the fingertip.
+       * MediaPipe landmark 8 =
+       * index finger tip.
        */
-      const indexTip =
-        landmarks[INDEX_TIP];
+      const fingertip =
+        landmarks[
+          INDEX_TIP
+        ];
 
       /*
-       * Rear-facing camera is NOT mirrored.
+       * Rear camera is not mirrored.
        *
-       * Therefore we keep the landmark
-       * X coordinate exactly as MediaPipe
+       * Keep X exactly as MediaPipe
        * reports it.
        */
-      const rawCursor: CursorPoint = {
+      const rawCursor: Point2D = {
         x: clamp01(
-          indexTip.x
+          fingertip.x
         ),
 
         y: clamp01(
-          indexTip.y
+          fingertip.y
         )
       };
 
-      /*
-       * First frame should snap directly
-       * to the fingertip.
-       *
-       * This prevents the cursor from
-       * appearing at the center and then
-       * sliding toward the hand.
-       */
-      if (!state.initialized) {
+      if (
+        !state.initialized
+      ) {
         state.filter.reset();
+
+        /*
+         * First frame snaps
+         * directly to the fingertip.
+         */
+        state.previousRaw =
+          rawCursor;
 
         state.previousCursor =
           rawCursor;
@@ -498,9 +504,24 @@ export class YuakeGestureTracker {
           y: 0
         };
 
-        state.initialized = true;
+        /*
+         * Prime the filter without
+         * creating an initial offset.
+         */
+        state.filter.filter(
+          rawCursor,
+          timestamp / 1000
+        );
+
+        state.initialized =
+          true;
       }
 
+      /*
+       * Filtered position gives us
+       * stability during tiny hand
+       * movements.
+       */
       const filtered =
         state.filter.filter(
           rawCursor,
@@ -514,94 +535,107 @@ export class YuakeGestureTracker {
             state.previousTimestamp
           ) / 1000,
 
-          MIN_DT_SECONDS,
-          MAX_DT_SECONDS
+          MIN_DT,
+          MAX_DT
         );
 
       /*
-       * Estimate velocity from the
-       * filtered fingertip trajectory.
+       * IMPORTANT:
+       *
+       * Velocity is measured from
+       * RAW fingertip movement.
+       *
+       * Measuring it from the filtered
+       * cursor would hide fast movement
+       * and make the cursor trail.
        */
-      const measuredVelocity = {
+      const rawVelocity: Point2D = {
         x:
           (
-            filtered.x -
-            state.previousCursor.x
+            rawCursor.x -
+            state.previousRaw.x
           ) /
           deltaSeconds,
 
         y:
           (
-            filtered.y -
-            state.previousCursor.y
+            rawCursor.y -
+            state.previousRaw.y
           ) /
           deltaSeconds
       };
 
-      const limitedVelocity =
-        limitVelocity(
-          measuredVelocity
-        );
-
-      /*
-       * Smooth the velocity separately.
-       *
-       * This avoids using one noisy
-       * frame to create a giant
-       * prediction jump.
-       */
-      const velocityBlend =
-        0.35;
-
-      state.velocity = {
-        x:
-          state.velocity.x *
-            (
-              1 -
-              velocityBlend
-            ) +
-          limitedVelocity.x *
-            velocityBlend,
-
-        y:
-          state.velocity.y *
-            (
-              1 -
-              velocityBlend
-            ) +
-          limitedVelocity.y *
-            velocityBlend
-      };
-
       const speed =
         Math.hypot(
-          state.velocity.x,
-          state.velocity.y
+          rawVelocity.x,
+          rawVelocity.y
         );
 
       /*
-       * Short-horizon prediction.
+       * Fast movement:
        *
-       * This compensates for the tiny
-       * delay between the real fingertip
-       * and the rendered cursor.
+       * progressively trust the raw
+       * fingertip instead of the delayed
+       * filtered position.
        */
-      const predictionSeconds =
-        calculateAdaptivePrediction(
+      const rawAmount =
+        movementBlend(
           speed
         );
 
-      const predictedCursor: CursorPoint = {
+      let cursor: Point2D = {
+        x: lerp(
+          filtered.x,
+          rawCursor.x,
+          rawAmount
+        ),
+
+        y: lerp(
+          filtered.y,
+          rawCursor.y,
+          rawAmount
+        )
+      };
+
+      /*
+       * At extremely tiny movement,
+       * retain the previous cursor
+       * to stop microscopic MediaPipe
+       * jitter.
+       *
+       * This does NOT apply during
+       * actual movement.
+       */
+      const movement =
+        Math.hypot(
+          rawCursor.x -
+            state.previousRaw.x,
+
+          rawCursor.y -
+            state.previousRaw.y
+        );
+
+      if (
+        movement <
+          MICRO_MOVEMENT &&
+        speed <
+          RAW_BLEND_START
+      ) {
+        cursor =
+          state.previousCursor;
+      }
+
+      /*
+       * Never allow the visual cursor
+       * to leave the normalized screen.
+       */
+      cursor = {
         x: clamp01(
-          filtered.x +
-            state.velocity.x *
-              predictionSeconds
+          cursor.x
         ),
 
         y: clamp01(
-          filtered.y +
-            state.velocity.y *
-              predictionSeconds
+          cursor.y
         )
       };
 
@@ -627,7 +661,8 @@ export class YuakeGestureTracker {
           speed
         );
 
-      const hand: GestureHand = {
+      const hand:
+        GestureHand = {
         id,
 
         handedness,
@@ -641,11 +676,10 @@ export class YuakeGestureTracker {
 
         palm,
 
-        cursor:
-          predictedCursor,
+        cursor,
 
         velocity:
-          state.velocity,
+          rawVelocity,
 
         speed,
 
@@ -665,25 +699,18 @@ export class YuakeGestureTracker {
 
         confidence,
 
-        visible: true,
+        visible:
+          true,
 
         lastSeen:
           timestamp
       };
 
-      /*
-       * Important:
-       *
-       * The previous position for the
-       * next velocity calculation is
-       * the FILTERED position, not the
-       * predicted position.
-       *
-       * Otherwise prediction would feed
-       * itself and create runaway drift.
-       */
+      state.previousRaw =
+        rawCursor;
+
       state.previousCursor =
-        filtered;
+        cursor;
 
       state.previousTimestamp =
         timestamp;
@@ -715,15 +742,13 @@ export class YuakeGestureTracker {
       0.8;
 
     /*
-     * Movement should not make the
-     * hand disappear. We only expose
-     * a slightly lower confidence
-     * during extreme motion.
+     * Do not punish ordinary
+     * fast movement heavily.
      */
     const motionPenalty =
       Math.min(
-        speed / 16,
-        0.18
+        speed / 20,
+        0.12
       );
 
     return clamp01(
@@ -741,11 +766,6 @@ export class YuakeGestureTracker {
       return null;
     }
 
-    /*
-     * Keep pinch priority so a hand
-     * actively interacting remains
-     * the primary hand.
-     */
     const pinching =
       hands.find(
         hand =>
@@ -756,10 +776,6 @@ export class YuakeGestureTracker {
       return pinching;
     }
 
-    /*
-     * Otherwise prefer the hand with
-     * the strongest confidence.
-     */
     return [...hands].sort(
       (a, b) =>
         b.confidence -
@@ -782,6 +798,7 @@ export class YuakeGestureTracker {
         HAND_LOST_GRACE_MS
       ) {
         state.filter.reset();
+
         state.classifier.reset();
 
         this.runtime.delete(
@@ -808,4 +825,4 @@ export class YuakeGestureTracker {
     this.processingTime =
       0;
   }
-  }
+    }
