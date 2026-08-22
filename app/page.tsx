@@ -22,15 +22,25 @@ type Status =
   | "live"
   | "error";
 
+type FrameMetadata = {
+  mediaTime: number;
+  presentedFrames: number;
+
+  presentationTime?: number;
+  expectedDisplayTime?: number;
+  width?: number;
+  height?: number;
+  processingDuration?: number;
+  captureTime?: number;
+  receiveTime?: number;
+};
+
 type VideoWithFrameCallback =
   HTMLVideoElement & {
     requestVideoFrameCallback?: (
       callback: (
         now: number,
-        metadata: {
-          mediaTime: number;
-          presentedFrames: number;
-        }
+        metadata: FrameMetadata
       ) => void
     ) => number;
 
@@ -38,6 +48,20 @@ type VideoWithFrameCallback =
       handle: number
     ) => void;
   };
+
+type Diagnostics = {
+  cameraFps: number;
+  trackFps: number;
+  inferenceMs: number;
+  callbackDelayMs: number;
+  decodeMs: number;
+  droppedFrames: number;
+  frameNumber: number;
+  resolution: string;
+  videoDelayMs: number;
+  jitter: number;
+  loopMs: number;
+};
 
 const EMPTY_FRAME:
   GestureFrame = {
@@ -47,6 +71,21 @@ const EMPTY_FRAME:
     primaryHand: null,
     frameTime: 0,
     processingTime: 0
+  };
+
+const EMPTY_DIAGNOSTICS:
+  Diagnostics = {
+    cameraFps: 0,
+    trackFps: 0,
+    inferenceMs: 0,
+    callbackDelayMs: 0,
+    decodeMs: 0,
+    droppedFrames: 0,
+    frameNumber: 0,
+    resolution: "--",
+    videoDelayMs: 0,
+    jitter: 0,
+    loopMs: 0
   };
 
 export default function Home() {
@@ -70,9 +109,7 @@ export default function Home() {
     useRef(false);
 
   const rafRef =
-    useRef<number | null>(
-      null
-    );
+    useRef<number | null>(null);
 
   const videoCallbackRef =
     useRef<number | null>(
@@ -84,6 +121,46 @@ export default function Home() {
 
   const lastUiUpdate =
     useRef(0);
+
+  /*
+   * --------------------------------------------------
+   * DIAGNOSTIC STATE
+   * --------------------------------------------------
+   */
+
+  const diagnosticRef =
+    useRef<Diagnostics>(
+      EMPTY_DIAGNOSTICS
+    );
+
+  const diagnosticWindowRef =
+    useRef({
+      start: 0,
+
+      cameraFrames: 0,
+
+      trackedFrames: 0,
+
+      lastTrackTime: 0,
+
+      lastPresentedFrame: -1,
+
+      droppedFrames: 0,
+
+      previousPoint: null as {
+        x: number;
+        y: number;
+      } | null,
+
+      jitterSamples: [] as number[],
+
+      lastCallbackTime: 0
+    });
+
+  const [diagnostics, setDiagnostics] =
+    useState<Diagnostics>(
+      EMPTY_DIAGNOSTICS
+    );
 
   const [status, setStatus] =
     useState<Status>("idle");
@@ -103,11 +180,8 @@ export default function Home() {
    * --------------------------------------------------
    * DIRECT CURSOR RENDERER
    * --------------------------------------------------
-   *
-   * This function never uses React state.
-   *
-   * It writes directly to the cursor.
    */
+
   const updateCursor =
     useCallback(
       (
@@ -127,11 +201,6 @@ export default function Home() {
           return;
         }
 
-        /*
-         * Use transform rather than
-         * left/top so the browser can
-         * move the cursor on the compositor.
-         */
         cursor.style.transform =
           `translate3d(` +
           `${hand.cursor.x * 100}vw,` +
@@ -157,9 +226,147 @@ export default function Home() {
               ? "GRAB"
               : hand.pose.toUpperCase();
         }
+
+        /*
+         * ------------------------------------------------
+         * FINGERTIP JITTER MEASUREMENT
+         * ------------------------------------------------
+         *
+         * This measures movement between consecutive
+         * tracker outputs.
+         *
+         * It does NOT alter the cursor.
+         */
+        const point = {
+          x: hand.cursor.x,
+          y: hand.cursor.y
+        };
+
+        const diagnostic =
+          diagnosticWindowRef.current;
+
+        if (
+          diagnostic.previousPoint
+        ) {
+          const dx =
+            point.x -
+            diagnostic.previousPoint.x;
+
+          const dy =
+            point.y -
+            diagnostic.previousPoint.y;
+
+          const distance =
+            Math.sqrt(
+              dx * dx +
+              dy * dy
+            );
+
+          /*
+           * Only retain the recent window.
+           */
+          diagnostic.jitterSamples.push(
+            distance
+          );
+
+          if (
+            diagnostic.jitterSamples
+              .length > 120
+          ) {
+            diagnostic.jitterSamples.shift();
+          }
+        }
+
+        diagnostic.previousPoint =
+          point;
       },
       []
     );
+
+  /*
+   * --------------------------------------------------
+   * DIAGNOSTIC UPDATE
+   * --------------------------------------------------
+   */
+
+  const publishDiagnostics =
+    useCallback(() => {
+      const diagnostic =
+        diagnosticWindowRef.current;
+
+      const now =
+        performance.now();
+
+      if (
+        diagnostic.start === 0
+      ) {
+        return;
+      }
+
+      const elapsed =
+        now -
+        diagnostic.start;
+
+      if (
+        elapsed < 500
+      ) {
+        return;
+      }
+
+      const cameraFps =
+        diagnostic.cameraFrames /
+        (elapsed / 1000);
+
+      const trackFps =
+        diagnostic.trackedFrames /
+        (elapsed / 1000);
+
+      let jitter = 0;
+
+      if (
+        diagnostic.jitterSamples
+          .length
+      ) {
+        const total =
+          diagnostic.jitterSamples.reduce(
+            (sum, value) =>
+              sum + value,
+            0
+          );
+
+        jitter =
+          (
+            total /
+            diagnostic.jitterSamples.length
+          ) * 1000;
+      }
+
+      const previous =
+        diagnosticRef.current;
+
+      const next: Diagnostics = {
+        ...previous,
+
+        cameraFps,
+
+        trackFps,
+
+        jitter
+      };
+
+      diagnosticRef.current =
+        next;
+
+      setDiagnostics({
+        ...next
+      });
+    }, []);
+
+  /*
+   * --------------------------------------------------
+   * STOP CAMERA
+   * --------------------------------------------------
+   */
 
   const stopCamera =
     useCallback(() => {
@@ -222,6 +429,33 @@ export default function Home() {
       lastPresentedFrame.current =
         -1;
 
+      diagnosticWindowRef.current = {
+        start: 0,
+
+        cameraFrames: 0,
+
+        trackedFrames: 0,
+
+        lastTrackTime: 0,
+
+        lastPresentedFrame: -1,
+
+        droppedFrames: 0,
+
+        previousPoint: null,
+
+        jitterSamples: [],
+
+        lastCallbackTime: 0
+      };
+
+      diagnosticRef.current =
+        EMPTY_DIAGNOSTICS;
+
+      setDiagnostics(
+        EMPTY_DIAGNOSTICS
+      );
+
       updateCursor(null);
 
       setFrame(
@@ -232,11 +466,11 @@ export default function Home() {
     }, [updateCursor]);
 
   /*
-   * UI update is deliberately throttled.
-   *
-   * The cursor itself NEVER goes through
-   * this state update.
+   * --------------------------------------------------
+   * UI FRAME UPDATE
+   * --------------------------------------------------
    */
+
   const publishFrame =
     useCallback(
       (
@@ -255,20 +489,28 @@ export default function Home() {
           timestamp;
 
         setFrame(result);
+
+        /*
+         * Diagnostic display is also deliberately
+         * throttled. It must NEVER be part of the
+         * cursor hot path.
+         */
+        publishDiagnostics();
       },
-      []
+      [publishDiagnostics]
     );
 
   /*
    * --------------------------------------------------
-   * CAMERA FRAME LOOP
+   * PROCESS CAMERA FRAME
    * --------------------------------------------------
    */
+
   const processFrame =
     useCallback(
       (
         timestamp: number,
-        presentedFrames?: number
+        metadata?: FrameMetadata
       ) => {
         if (
           !runningRef.current
@@ -293,48 +535,179 @@ export default function Home() {
           return;
         }
 
+        const diagnostic =
+          diagnosticWindowRef.current;
+
         /*
-         * Prevent processing the exact
-         * same camera frame twice.
+         * ------------------------------------------------
+         * CAMERA FRAME COUNT
+         * ------------------------------------------------
          */
-        if (
-          presentedFrames !==
-            undefined &&
-          presentedFrames ===
-            lastPresentedFrame.current
-        ) {
-          return;
-        }
+
+        diagnostic.cameraFrames++;
+
+        /*
+         * ------------------------------------------------
+         * DROPPED FRAME COUNT
+         * ------------------------------------------------
+         */
 
         if (
-          presentedFrames !==
-          undefined
+          metadata &&
+          diagnostic.lastPresentedFrame >=
+            0
         ) {
-          lastPresentedFrame.current =
-            presentedFrames;
+          const difference =
+            metadata.presentedFrames -
+            diagnostic.lastPresentedFrame;
+
+          if (
+            difference > 1
+          ) {
+            diagnostic.droppedFrames +=
+              difference - 1;
+          }
         }
+
+        if (metadata) {
+          diagnostic.lastPresentedFrame =
+            metadata.presentedFrames;
+
+          lastPresentedFrame.current =
+            metadata.presentedFrames;
+        }
+
+        /*
+         * ------------------------------------------------
+         * CAMERA RESOLUTION
+         * ------------------------------------------------
+         */
+
+        const width =
+          metadata?.width ??
+          video.videoWidth;
+
+        const height =
+          metadata?.height ??
+          video.videoHeight;
+
+        diagnosticRef.current.resolution =
+          width && height
+            ? `${width}×${height}`
+            : "--";
+
+        /*
+         * ------------------------------------------------
+         * CALLBACK TIMING
+         * ------------------------------------------------
+         */
+
+        if (
+          metadata?.presentationTime !==
+            undefined
+        ) {
+          diagnosticRef.current.callbackDelayMs =
+            Math.max(
+              0,
+              performance.now() -
+                metadata.presentationTime
+            );
+        } else {
+          diagnosticRef.current.callbackDelayMs =
+            0;
+        }
+
+        /*
+         * Chrome exposes processingDuration
+         * on requestVideoFrameCallback metadata
+         * when available.
+         */
+        diagnosticRef.current.decodeMs =
+          metadata?.processingDuration ??
+          0;
+
+        /*
+         * ------------------------------------------------
+         * TRACKING INTERVAL
+         * ------------------------------------------------
+         */
+
+        if (
+          diagnostic.lastTrackTime
+        ) {
+          diagnosticRef.current.loopMs =
+            timestamp -
+            diagnostic.lastTrackTime;
+        }
+
+        diagnostic.lastTrackTime =
+          timestamp;
+
+        /*
+         * ------------------------------------------------
+         * ACTUAL MEDIAPIPE CALL
+         * ------------------------------------------------
+         */
+
+        const before =
+          performance.now();
 
         try {
-          /*
-           * Detect using the timestamp
-           * belonging to this actual frame.
-           */
           const result =
             tracker.process(
               video,
               timestamp
             );
 
+          const after =
+            performance.now();
+
+          diagnostic.trackedFrames++;
+
+          diagnosticRef.current.inferenceMs =
+            after -
+            before;
+
           /*
-           * THIS is the hot path.
+           * Cursor is updated immediately.
            *
-           * No React render.
-           * No setState.
-           * No waiting.
+           * No React state.
            */
           updateCursor(
             result.primaryHand
           );
+
+          /*
+           * ------------------------------------------------
+           * FRAME AGE
+           * ------------------------------------------------
+           *
+           * This is NOT pretending we can directly
+           * recover sensor capture time.
+           *
+           * It measures the delay between the
+           * presentation callback timestamp and
+           * processing completion.
+           */
+          if (
+            metadata?.presentationTime !==
+              undefined
+          ) {
+            diagnosticRef.current.videoDelayMs =
+              Math.max(
+                0,
+                after -
+                  metadata.presentationTime
+              );
+          } else {
+            diagnosticRef.current.videoDelayMs =
+              0;
+          }
+
+          diagnosticRef.current.frameNumber =
+            metadata?.presentedFrames ??
+            diagnosticRef.current.frameNumber +
+              1;
 
           publishFrame(
             result,
@@ -366,6 +739,12 @@ export default function Home() {
       ]
     );
 
+  /*
+   * --------------------------------------------------
+   * RAF FALLBACK
+   * --------------------------------------------------
+   */
+
   const scheduleFallback =
     useCallback(() => {
       if (
@@ -394,9 +773,11 @@ export default function Home() {
     }, [processFrame]);
 
   /*
-   * The callback must be installed
-   * after the video has begun playing.
+   * --------------------------------------------------
+   * VIDEO FRAME LOOP
+   * --------------------------------------------------
    */
+
   const startFrameLoop =
     useCallback(() => {
       if (
@@ -410,29 +791,17 @@ export default function Home() {
           | VideoWithFrameCallback
           | null;
 
-      if (
-        !video
-      ) {
+      if (!video) {
         return;
       }
 
-      /*
-       * Preferred path:
-       *
-       * browser tells us when a new
-       * camera frame has actually been
-       * presented.
-       */
       if (
         video.requestVideoFrameCallback
       ) {
         const callback =
           (
             now: number,
-            metadata: {
-              mediaTime: number;
-              presentedFrames: number;
-            }
+            metadata: FrameMetadata
           ) => {
             if (
               !runningRef.current
@@ -442,7 +811,7 @@ export default function Home() {
 
             processFrame(
               now,
-              metadata.presentedFrames
+              metadata
             );
 
             videoCallbackRef.current =
@@ -459,14 +828,17 @@ export default function Home() {
         return;
       }
 
-      /*
-       * Older browser fallback.
-       */
       scheduleFallback();
     }, [
       processFrame,
       scheduleFallback
     ]);
+
+  /*
+   * --------------------------------------------------
+   * CAMERA START
+   * --------------------------------------------------
+   */
 
   const startCamera =
     useCallback(
@@ -494,9 +866,6 @@ export default function Home() {
             await navigator.mediaDevices.getUserMedia(
               {
                 video: {
-                  /*
-                   * REAR CAMERA
-                   */
                   facingMode: {
                     ideal:
                       "environment"
@@ -537,8 +906,8 @@ export default function Home() {
             stream;
 
           /*
-           * Rear camera:
-           * do NOT mirror it.
+           * Rear camera.
+           * Never mirror it.
            */
           video.style.transform =
             "none";
@@ -552,6 +921,45 @@ export default function Home() {
             tracker;
 
           await tracker.initialize();
+
+          /*
+           * Reset diagnostics.
+           */
+          diagnosticWindowRef.current = {
+            start:
+              performance.now(),
+
+            cameraFrames: 0,
+
+            trackedFrames: 0,
+
+            lastTrackTime: 0,
+
+            lastPresentedFrame: -1,
+
+            droppedFrames: 0,
+
+            previousPoint: null,
+
+            jitterSamples: [],
+
+            lastCallbackTime: 0
+          };
+
+          diagnosticRef.current =
+            {
+              ...EMPTY_DIAGNOSTICS,
+
+              resolution:
+                video.videoWidth &&
+                video.videoHeight
+                  ? `${video.videoWidth}×${video.videoHeight}`
+                  : "--"
+            };
+
+          setDiagnostics(
+            diagnosticRef.current
+          );
 
           runningRef.current =
             true;
@@ -598,6 +1006,36 @@ export default function Home() {
       stopCamera();
     };
   }, [stopCamera]);
+
+  /*
+   * Refresh diagnostic numbers once per second.
+   *
+   * This is completely separate from the
+   * cursor renderer.
+   */
+  useEffect(() => {
+    if (
+      status !== "live"
+    ) {
+      return;
+    }
+
+    const interval =
+      window.setInterval(
+        () => {
+          publishDiagnostics();
+        },
+        1000
+      );
+
+    return () =>
+      window.clearInterval(
+        interval
+      );
+  }, [
+    status,
+    publishDiagnostics
+  ]);
 
   const primary =
     frame.primaryHand;
@@ -810,6 +1248,9 @@ export default function Home() {
           {showDebug && (
             <DebugPanel
               frame={frame}
+              diagnostics={
+                diagnostics
+              }
             />
           )}
         </>
@@ -846,9 +1287,11 @@ export default function Home() {
 }
 
 function DebugPanel({
-  frame
+  frame,
+  diagnostics
 }: {
   frame: GestureFrame;
+  diagnostics: Diagnostics;
 }) {
   const hand =
     frame.primaryHand;
@@ -948,6 +1391,143 @@ function DebugPanel({
           %
         </strong>
       </div>
+
+      <div className="debugDivider" />
+
+      <div className="debugTitle">
+        PIPELINE
+      </div>
+
+      <div className="debugRow">
+        <span>
+          CAM FPS
+        </span>
+
+        <strong>
+          {diagnostics.cameraFps.toFixed(
+            1
+          )}
+        </strong>
+      </div>
+
+      <div className="debugRow">
+        <span>
+          TRACK FPS
+        </span>
+
+        <strong>
+          {diagnostics.trackFps.toFixed(
+            1
+          )}
+        </strong>
+      </div>
+
+      <div className="debugRow">
+        <span>
+          INFER
+        </span>
+
+        <strong>
+          {diagnostics.inferenceMs.toFixed(
+            1
+          )}
+          ms
+        </strong>
+      </div>
+
+      <div className="debugRow">
+        <span>
+          LOOP
+        </span>
+
+        <strong>
+          {diagnostics.loopMs.toFixed(
+            1
+          )}
+          ms
+        </strong>
+      </div>
+
+      <div className="debugRow">
+        <span>
+          CALLBACK
+        </span>
+
+        <strong>
+          {diagnostics.callbackDelayMs.toFixed(
+            1
+          )}
+          ms
+        </strong>
+      </div>
+
+      <div className="debugRow">
+        <span>
+          DECODE
+        </span>
+
+        <strong>
+          {diagnostics.decodeMs.toFixed(
+            1
+          )}
+          ms
+        </strong>
+      </div>
+
+      <div className="debugRow">
+        <span>
+          VIDEO DELAY
+        </span>
+
+        <strong>
+          {diagnostics.videoDelayMs.toFixed(
+            1
+          )}
+          ms
+        </strong>
+      </div>
+
+      <div className="debugRow">
+        <span>
+          JITTER
+        </span>
+
+        <strong>
+          {diagnostics.jitter.toFixed(
+            2
+          )}
+        </strong>
+      </div>
+
+      <div className="debugRow">
+        <span>
+          DROPPED
+        </span>
+
+        <strong>
+          {diagnostics.droppedFrames}
+        </strong>
+      </div>
+
+      <div className="debugRow">
+        <span>
+          FRAME
+        </span>
+
+        <strong>
+          {diagnostics.frameNumber}
+        </strong>
+      </div>
+
+      <div className="debugRow">
+        <span>
+          RES
+        </span>
+
+        <strong>
+          {diagnostics.resolution}
+        </strong>
+      </div>
     </aside>
   );
-      }
+}
