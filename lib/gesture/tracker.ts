@@ -56,14 +56,31 @@ type VideoRect = {
 const INDEX_TIP = 8;
 
 /*
- * These are the values used by
- * GestureWatcher's One-Euro filter.
- *
- * Low latency first.
+ * Match GestureWatcher's low-latency
+ * One-Euro configuration.
  */
 const FILTER_MIN_CUTOFF = 1.2;
 const FILTER_BETA = 0.01;
 const FILTER_D_CUTOFF = 1.0;
+
+/*
+ * --------------------------------------------------
+ * PROCESSING CANVAS
+ * --------------------------------------------------
+ *
+ * The visible camera stays full resolution.
+ *
+ * MediaPipe receives a much smaller copy with
+ * exactly the same aspect ratio.
+ *
+ * This reduces the amount of image data that
+ * has to be copied and processed while preserving
+ * the landmark coordinate relationship with the
+ * original camera frame.
+ *
+ * 480 is intentionally conservative on mobile.
+ */
+const MAX_PROCESSING_WIDTH = 480;
 
 let cachedVideoRect:
   | {
@@ -135,14 +152,16 @@ function getHandedness(
 }
 
 /*
- * YUAKE uses object-fit: cover.
+ * --------------------------------------------------
+ * DISPLAYED CAMERA RECTANGLE
+ * --------------------------------------------------
  *
- * MediaPipe coordinates are relative
- * to the complete camera frame.
+ * MediaPipe coordinates are normalized against
+ * the complete camera frame.
  *
- * This function returns the actual
- * portion of that frame visible
- * on the screen.
+ * The visible video uses object-fit: cover,
+ * so the actual visible camera rectangle must
+ * be calculated before converting coordinates.
  */
 function getVideoContentRect(
   video: HTMLVideoElement
@@ -242,10 +261,11 @@ function getVideoContentRect(
 }
 
 /*
- * Camera coordinate -> viewport coordinate.
+ * --------------------------------------------------
+ * CAMERA → VIEWPORT
+ * --------------------------------------------------
  *
- * YUAKE uses the rear camera and the
- * displayed video is NOT mirrored.
+ * Rear camera is NOT mirrored.
  */
 function cameraToViewport(
   video: HTMLVideoElement,
@@ -311,6 +331,25 @@ export class YuakeGestureTracker {
   private lastTimestamp =
     0;
 
+  /*
+   * Small processing canvas.
+   *
+   * It is never inserted into the DOM.
+   */
+  private processingCanvas:
+    HTMLCanvasElement | null =
+      null;
+
+  private processingContext:
+    CanvasRenderingContext2D | null =
+      null;
+
+  private processingWidth =
+    0;
+
+  private processingHeight =
+    0;
+
   async initialize() {
     if (
       this.initialized
@@ -343,8 +382,162 @@ export class YuakeGestureTracker {
         }
       );
 
+    /*
+     * Create the processing canvas once.
+     */
+    this.processingCanvas =
+      document.createElement(
+        "canvas"
+      );
+
+    this.processingContext =
+      this.processingCanvas.getContext(
+        "2d",
+        {
+          alpha: false,
+          desynchronized: true
+        }
+      );
+
+    if (
+      !this.processingContext
+    ) {
+      throw new Error(
+        "Unable to create the hand-tracking processing canvas."
+      );
+    }
+
+    /*
+     * We do not need color interpolation quality
+     * for hand landmarks.
+     *
+     * Disable it to reduce canvas work.
+     */
+    this.processingContext.imageSmoothingEnabled =
+      false;
+
     this.initialized =
       true;
+  }
+
+  /*
+   * --------------------------------------------------
+   * PREPARE LOW-RES FRAME
+   * --------------------------------------------------
+   */
+  private prepareProcessingFrame(
+    video: HTMLVideoElement
+  ): HTMLCanvasElement {
+    if (
+      !this.processingCanvas ||
+      !this.processingContext
+    ) {
+      throw new Error(
+        "Processing canvas has not been initialized."
+      );
+    }
+
+    const sourceWidth =
+      video.videoWidth;
+
+    const sourceHeight =
+      video.videoHeight;
+
+    if (
+      !sourceWidth ||
+      !sourceHeight
+    ) {
+      throw new Error(
+        "Camera video dimensions are unavailable."
+      );
+    }
+
+    /*
+     * Preserve the camera aspect ratio.
+     */
+    const scale =
+      Math.min(
+        1,
+        MAX_PROCESSING_WIDTH /
+          sourceWidth
+      );
+
+    const width =
+      Math.max(
+        1,
+        Math.round(
+          sourceWidth *
+            scale
+        )
+      );
+
+    const height =
+      Math.max(
+        1,
+        Math.round(
+          sourceHeight *
+            scale
+        )
+      );
+
+    if (
+      width !==
+        this.processingWidth ||
+      height !==
+        this.processingHeight
+    ) {
+      this.processingWidth =
+        width;
+
+      this.processingHeight =
+        height;
+
+      this.processingCanvas.width =
+        width;
+
+      this.processingCanvas.height =
+        height;
+
+      /*
+       * Canvas resizing resets the context.
+       */
+      this.processingContext =
+        this.processingCanvas.getContext(
+          "2d",
+          {
+            alpha: false,
+            desynchronized: true
+          }
+        );
+
+      if (
+        !this.processingContext
+      ) {
+        throw new Error(
+          "Unable to recreate the processing canvas context."
+        );
+      }
+
+      this.processingContext.imageSmoothingEnabled =
+        false;
+    }
+
+    /*
+     * Copy the current camera frame into
+     * the smaller canvas.
+     *
+     * Same aspect ratio = same normalized
+     * MediaPipe coordinates.
+     */
+    this.processingContext.drawImage(
+      video,
+      0,
+      0,
+      width,
+      height
+    );
+
+    return this.processingCanvas;
   }
 
   process(
@@ -363,8 +556,8 @@ export class YuakeGestureTracker {
       performance.now();
 
     /*
-     * MediaPipe requires monotonically
-     * increasing timestamps.
+     * MediaPipe requires monotonically increasing
+     * timestamps.
      */
     const safeTimestamp =
       Math.max(
@@ -373,12 +566,36 @@ export class YuakeGestureTracker {
           0.001
       );
 
+    /*
+     * ------------------------------------------------
+     * IMPORTANT:
+     *
+     * MediaPipe no longer receives the full
+     * 1080×1920 camera frame.
+     *
+     * It receives the smaller same-aspect-ratio
+     * processing canvas.
+     * ------------------------------------------------
+     */
+    const processingFrame =
+      this.prepareProcessingFrame(
+        video
+      );
+
     const result =
       this.detector.detectForVideo(
-        video,
+        processingFrame,
         safeTimestamp
       );
 
+    /*
+     * Coordinates returned by MediaPipe are still
+     * normalized to the processing canvas.
+     *
+     * Because the canvas preserves the exact camera
+     * aspect ratio, those normalized coordinates map
+     * directly back onto the original camera frame.
+     */
     const hands =
       this.convertResult(
         result,
@@ -522,12 +739,14 @@ export class YuakeGestureTracker {
         timestamp;
 
       /*
-       * --------------------------------------------------
-       * RAW FINGERTIP
-       * --------------------------------------------------
+       * ------------------------------------------------
+       * ACTUAL INDEX FINGERTIP
+       * ------------------------------------------------
        *
-       * MediaPipe landmark 8 is the
-       * index fingertip.
+       * Landmark 8 = index fingertip.
+       *
+       * No thumb midpoint.
+       * No artificial offset.
        */
       const fingertip =
         landmarks[
@@ -535,8 +754,8 @@ export class YuakeGestureTracker {
         ];
 
       /*
-       * Map it into the ACTUAL
-       * displayed camera rectangle.
+       * Map the raw fingertip into the
+       * actual visible camera rectangle.
        */
       const rawCursor =
         cameraToViewport(
@@ -545,15 +764,10 @@ export class YuakeGestureTracker {
         );
 
       /*
-       * GestureWatcher's One-Euro
-       * approach:
+       * GestureWatcher-style One-Euro filtering.
        *
-       * filter screen-space coordinates,
-       * not raw camera coordinates.
-       *
-       * This is important because
-       * screen-space movement is what
-       * the user actually sees.
+       * We filter screen-space coordinates,
+       * because that's what the user sees.
        */
       const filtered =
         runtime.filter.filter(
@@ -563,8 +777,13 @@ export class YuakeGestureTracker {
         );
 
       /*
-       * Calculate screen-space velocity
-       * from the raw fingertip.
+       * ------------------------------------------------
+       * VELOCITY
+       * ------------------------------------------------
+       *
+       * Used for the UI/debug information.
+       *
+       * It does NOT alter the cursor.
        */
       const dt =
         clamp(
@@ -601,14 +820,16 @@ export class YuakeGestureTracker {
         );
 
       /*
-       * IMPORTANT:
+       * ------------------------------------------------
+       * CURSOR
+       * ------------------------------------------------
        *
-       * No adaptive interpolation.
-       * No prediction.
+       * The filtered fingertip itself is the cursor.
+       *
+       * No trailing interpolation.
        * No dead-zone.
-       *
-       * The One-Euro output is the
-       * cursor position.
+       * No arbitrary offset.
+       * No fake cursor movement.
        */
       const cursor = {
         x: clamp01(
@@ -714,7 +935,8 @@ export class YuakeGestureTracker {
     hands: GestureHand[]
   ) {
     if (
-      hands.length === 0
+      hands.length ===
+      0
     ) {
       return null;
     }
@@ -778,7 +1000,19 @@ export class YuakeGestureTracker {
     this.lastTimestamp =
       0;
 
+    this.processingCanvas =
+      null;
+
+    this.processingContext =
+      null;
+
+    this.processingWidth =
+      0;
+
+    this.processingHeight =
+      0;
+
     cachedVideoRect =
       null;
   }
-}
+      }
