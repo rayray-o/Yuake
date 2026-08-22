@@ -11,6 +11,10 @@ import {
   YuakeGestureTracker
 } from "../lib/gesture/tracker";
 
+import {
+  CursorPredictor
+} from "../lib/gesture/predictor";
+
 import type {
   GestureFrame,
   GestureHand
@@ -122,6 +126,16 @@ export default function Home() {
   const lastUiUpdate =
     useRef(0);
 
+  const predictorRef =
+    useRef(
+      new CursorPredictor()
+    );
+
+  const renderLoopRef =
+    useRef<number | null>(
+      null
+    );
+
   /*
    * --------------------------------------------------
    * DIAGNOSTIC STATE
@@ -201,11 +215,20 @@ export default function Home() {
           return;
         }
 
-        cursor.style.transform =
-          `translate3d(` +
-          `${hand.cursor.x * 100}vw,` +
-          `${hand.cursor.y * 100}vh,` +
-          `0)`;
+        /*
+         * Position is NOT set here anymore.
+         *
+         * The predictor/render loop owns position
+         * so the dot can glide at full screen
+         * refresh rate between real detections
+         * instead of teleporting whenever a new
+         * MediaPipe result arrives.
+         */
+        predictorRef.current.update(
+          hand.cursor,
+          hand.velocity,
+          performance.now()
+        );
 
         cursor.style.opacity =
           "1";
@@ -282,6 +305,54 @@ export default function Home() {
       },
       []
     );
+
+  /*
+   * --------------------------------------------------
+   * CURSOR RENDER LOOP
+   * --------------------------------------------------
+   *
+   * Runs every animation frame (screen refresh rate),
+   * completely decoupled from how often MediaPipe
+   * finishes a detection. Draws the PREDICTED
+   * position, so the dot glides smoothly even when
+   * inference is slower than the display.
+   */
+
+  const renderCursorLoop =
+    useCallback(() => {
+      if (
+        !runningRef.current
+      ) {
+        renderLoopRef.current =
+          null;
+
+        return;
+      }
+
+      const predicted =
+        predictorRef.current.predict(
+          performance.now()
+        );
+
+      const cursor =
+        cursorRef.current;
+
+      if (
+        predicted &&
+        cursor
+      ) {
+        cursor.style.transform =
+          `translate3d(` +
+          `${predicted.x * 100}vw,` +
+          `${predicted.y * 100}vh,` +
+          `0)`;
+      }
+
+      renderLoopRef.current =
+        requestAnimationFrame(
+          renderCursorLoop
+        );
+    }, []);
 
   /*
    * --------------------------------------------------
@@ -403,6 +474,20 @@ export default function Home() {
         rafRef.current =
           null;
       }
+
+      if (
+        renderLoopRef.current !==
+        null
+      ) {
+        cancelAnimationFrame(
+          renderLoopRef.current
+        );
+
+        renderLoopRef.current =
+          null;
+      }
+
+      predictorRef.current.clear();
 
       trackerRef.current?.close();
 
@@ -973,6 +1058,11 @@ export default function Home() {
           setStatus("live");
 
           startFrameLoop();
+
+          renderLoopRef.current =
+            requestAnimationFrame(
+              renderCursorLoop
+            );
         } catch (err) {
           console.error(err);
 
@@ -998,7 +1088,10 @@ export default function Home() {
           setStatus("error");
         }
       },
-      [startFrameLoop]
+      [
+        startFrameLoop,
+        renderCursorLoop
+      ]
     );
 
   useEffect(() => {
