@@ -46,45 +46,27 @@ type RuntimeState = {
   lastSeen: number;
 };
 
-type VideoRect = {
-  left: number;
-  top: number;
-  width: number;
-  height: number;
-};
-
 const INDEX_TIP = 8;
 
-/*
- * Match GestureWatcher's low-latency
- * One-Euro configuration.
- */
 const FILTER_MIN_CUTOFF = 1.2;
 const FILTER_BETA = 0.01;
 const FILTER_D_CUTOFF = 1.0;
 
 /*
- * --------------------------------------------------
- * PROCESSING CANVAS
- * --------------------------------------------------
+ * Keep the fast mobile processing pipeline.
  *
- * The visible camera stays full resolution.
- *
- * MediaPipe receives a much smaller copy with
- * exactly the same aspect ratio.
- *
- * This reduces the amount of image data that
- * has to be copied and processed while preserving
- * the landmark coordinate relationship with the
- * original camera frame.
- *
- * 480 is intentionally conservative on mobile.
+ * The visible camera remains full resolution.
+ * MediaPipe receives a smaller same-aspect-ratio
+ * processing frame.
  */
 const MAX_PROCESSING_WIDTH = 480;
 
-let cachedVideoRect:
+let cachedViewport:
   | {
-      rect: VideoRect | null;
+      width: number;
+      height: number;
+      left: number;
+      top: number;
       time: number;
     }
   | null = null;
@@ -152,39 +134,21 @@ function getHandedness(
 }
 
 /*
- * --------------------------------------------------
- * DISPLAYED CAMERA RECTANGLE
- * --------------------------------------------------
+ * Get the actual DOM rectangle occupied by
+ * the video element.
  *
- * MediaPipe coordinates are normalized against
- * the complete camera frame.
+ * IMPORTANT:
+ * This is NOT the visible image rectangle.
  *
- * The visible video uses object-fit: cover,
- * so the actual visible camera rectangle must
- * be calculated before converting coordinates.
+ * With object-fit: cover, the source image
+ * is scaled until it completely covers this
+ * rectangle and some source pixels are cropped.
  */
-function getVideoContentRect(
+function getViewportRect(
   video: HTMLVideoElement
-): VideoRect | null {
-  if (
-    !video.videoWidth ||
-    !video.videoHeight ||
-    !video.isConnected
-  ) {
-    return null;
-  }
-
+) {
   const now =
     performance.now();
-
-  if (
-    cachedVideoRect &&
-    now -
-      cachedVideoRect.time <
-      250
-  ) {
-    return cachedVideoRect.rect;
-  }
 
   const element =
     video.getBoundingClientRect();
@@ -196,116 +160,193 @@ function getVideoContentRect(
     return null;
   }
 
-  const sourceAspect =
-    video.videoWidth /
-    video.videoHeight;
-
-  const destinationAspect =
-    element.width /
-    element.height;
-
-  let width =
-    element.width;
-
-  let height =
-    element.height;
-
   if (
-    destinationAspect >
-    sourceAspect
+    cachedViewport &&
+    now -
+      cachedViewport.time <
+      100 &&
+    cachedViewport.width ===
+      element.width &&
+    cachedViewport.height ===
+      element.height &&
+    cachedViewport.left ===
+      element.left &&
+    cachedViewport.top ===
+      element.top
   ) {
-    height =
-      element.height;
-
-    width =
-      height *
-      sourceAspect;
-  } else {
-    width =
-      element.width;
-
-    height =
-      width /
-      sourceAspect;
+    return cachedViewport;
   }
 
-  const left =
-    element.left +
-    (
-      element.width -
-      width
-    ) /
-      2;
-
-  const top =
-    element.top +
-    (
-      element.height -
-      height
-    ) /
-      2;
-
-  const rect = {
-    left,
-    top,
-    width,
-    height
-  };
-
-  cachedVideoRect = {
-    rect,
+  cachedViewport = {
+    left: element.left,
+    top: element.top,
+    width: element.width,
+    height: element.height,
     time: now
   };
 
-  return rect;
+  return cachedViewport;
 }
 
 /*
  * --------------------------------------------------
- * CAMERA → VIEWPORT
+ * CORRECT OBJECT-FIT: COVER MAPPING
  * --------------------------------------------------
  *
- * Rear camera is NOT mirrored.
+ * MediaPipe gives normalized coordinates:
+ *
+ *   x = 0..1 across the COMPLETE camera frame
+ *   y = 0..1 across the COMPLETE camera frame
+ *
+ * But the CSS camera uses:
+ *
+ *   object-fit: cover
+ *
+ * Therefore the complete camera frame is NOT
+ * necessarily visible.
+ *
+ * We must reproduce the exact cover transform:
+ *
+ *     scale = max(
+ *       viewportWidth / sourceWidth,
+ *       viewportHeight / sourceHeight
+ *     )
+ *
+ * Then determine how many source pixels are
+ * cropped from each side.
+ *
+ * This is the important correction that keeps
+ * the cursor physically attached to landmark 8.
  */
 function cameraToViewport(
   video: HTMLVideoElement,
   point: Point3D
 ): Point2D {
-  const rect =
-    getVideoContentRect(
+  const viewport =
+    getViewportRect(
       video
     );
 
-  if (!rect) {
+  if (
+    !viewport ||
+    !video.videoWidth ||
+    !video.videoHeight
+  ) {
     return {
-      x:
-        point.x *
-        window.innerWidth,
+      x: clamp01(
+        point.x
+      ),
 
-      y:
-        point.y *
-        window.innerHeight
+      y: clamp01(
+        point.y
+      )
     };
   }
 
-  const viewportX =
-    rect.left +
-    point.x *
-      rect.width;
+  const sourceWidth =
+    video.videoWidth;
 
-  const viewportY =
-    rect.top +
-    point.y *
-      rect.height;
+  const sourceHeight =
+    video.videoHeight;
+
+  const viewportWidth =
+    viewport.width;
+
+  const viewportHeight =
+    viewport.height;
+
+  /*
+   * Exact CSS object-fit: cover scale.
+   */
+  const scale =
+    Math.max(
+      viewportWidth /
+        sourceWidth,
+
+      viewportHeight /
+        sourceHeight
+    );
+
+  /*
+   * Scaled dimensions of the COMPLETE
+   * camera image before cropping.
+   */
+  const scaledWidth =
+    sourceWidth *
+    scale;
+
+  const scaledHeight =
+    sourceHeight *
+    scale;
+
+  /*
+   * object-position defaults to 50% 50%.
+   *
+   * Therefore the overflow is split equally
+   * between the two sides.
+   */
+  const cropX =
+    (
+      scaledWidth -
+      viewportWidth
+    ) /
+    2;
+
+  const cropY =
+    (
+      scaledHeight -
+      viewportHeight
+    ) /
+    2;
+
+  /*
+   * Convert normalized MediaPipe coordinates
+   * back into source pixels.
+   */
+  const sourceX =
+    clamp01(
+      point.x
+    ) *
+    sourceWidth;
+
+  const sourceY =
+    clamp01(
+      point.y
+    ) *
+    sourceHeight;
+
+  /*
+   * Scale source coordinates exactly like CSS.
+   */
+  const displayedX =
+    sourceX *
+      scale -
+    cropX;
+
+  const displayedY =
+    sourceY *
+      scale -
+    cropY;
+
+  /*
+   * Add the DOM element's position.
+   */
+  const screenX =
+    viewport.left +
+    displayedX;
+
+  const screenY =
+    viewport.top +
+    displayedY;
 
   return {
     x: clamp01(
-      viewportX /
+      screenX /
         window.innerWidth
     ),
 
     y: clamp01(
-      viewportY /
+      screenY /
         window.innerHeight
     )
   };
@@ -332,9 +373,9 @@ export class YuakeGestureTracker {
     0;
 
   /*
-   * Small processing canvas.
+   * Low-resolution processing canvas.
    *
-   * It is never inserted into the DOM.
+   * This is never displayed.
    */
   private processingCanvas:
     HTMLCanvasElement | null =
@@ -403,16 +444,10 @@ export class YuakeGestureTracker {
       !this.processingContext
     ) {
       throw new Error(
-        "Unable to create the hand-tracking processing canvas."
+        "Unable to create hand-tracking processing canvas."
       );
     }
 
-    /*
-     * We do not need color interpolation quality
-     * for hand landmarks.
-     *
-     * Disable it to reduce canvas work.
-     */
     this.processingContext.imageSmoothingEnabled =
       false;
 
@@ -421,19 +456,19 @@ export class YuakeGestureTracker {
   }
 
   /*
-   * --------------------------------------------------
-   * PREPARE LOW-RES FRAME
-   * --------------------------------------------------
+   * Build the small processing frame.
+   *
+   * Aspect ratio is preserved exactly.
    */
   private prepareProcessingFrame(
     video: HTMLVideoElement
-  ): HTMLCanvasElement {
+  ) {
     if (
       !this.processingCanvas ||
       !this.processingContext
     ) {
       throw new Error(
-        "Processing canvas has not been initialized."
+        "Processing canvas is not initialized."
       );
     }
 
@@ -448,16 +483,14 @@ export class YuakeGestureTracker {
       !sourceHeight
     ) {
       throw new Error(
-        "Camera video dimensions are unavailable."
+        "Camera dimensions are unavailable."
       );
     }
 
-    /*
-     * Preserve the camera aspect ratio.
-     */
     const scale =
       Math.min(
         1,
+
         MAX_PROCESSING_WIDTH /
           sourceWidth
       );
@@ -498,9 +531,6 @@ export class YuakeGestureTracker {
       this.processingCanvas.height =
         height;
 
-      /*
-       * Canvas resizing resets the context.
-       */
       this.processingContext =
         this.processingCanvas.getContext(
           "2d",
@@ -514,7 +544,7 @@ export class YuakeGestureTracker {
         !this.processingContext
       ) {
         throw new Error(
-          "Unable to recreate the processing canvas context."
+          "Unable to recreate processing canvas."
         );
       }
 
@@ -522,13 +552,6 @@ export class YuakeGestureTracker {
         false;
     }
 
-    /*
-     * Copy the current camera frame into
-     * the smaller canvas.
-     *
-     * Same aspect ratio = same normalized
-     * MediaPipe coordinates.
-     */
     this.processingContext.drawImage(
       video,
       0,
@@ -555,10 +578,6 @@ export class YuakeGestureTracker {
     const start =
       performance.now();
 
-    /*
-     * MediaPipe requires monotonically increasing
-     * timestamps.
-     */
     const safeTimestamp =
       Math.max(
         timestamp,
@@ -567,15 +586,13 @@ export class YuakeGestureTracker {
       );
 
     /*
-     * ------------------------------------------------
      * IMPORTANT:
      *
-     * MediaPipe no longer receives the full
-     * 1080×1920 camera frame.
+     * MediaPipe receives the small processing
+     * frame, NOT the full-resolution camera.
      *
-     * It receives the smaller same-aspect-ratio
-     * processing canvas.
-     * ------------------------------------------------
+     * This is what gave YUAKE the large
+     * smoothness improvement.
      */
     const processingFrame =
       this.prepareProcessingFrame(
@@ -588,14 +605,6 @@ export class YuakeGestureTracker {
         safeTimestamp
       );
 
-    /*
-     * Coordinates returned by MediaPipe are still
-     * normalized to the processing canvas.
-     *
-     * Because the canvas preserves the exact camera
-     * aspect ratio, those normalized coordinates map
-     * directly back onto the original camera frame.
-     */
     const hands =
       this.convertResult(
         result,
@@ -739,14 +748,12 @@ export class YuakeGestureTracker {
         timestamp;
 
       /*
-       * ------------------------------------------------
-       * ACTUAL INDEX FINGERTIP
-       * ------------------------------------------------
+       * MediaPipe landmark 8 =
+       * INDEX FINGERTIP.
        *
-       * Landmark 8 = index fingertip.
-       *
+       * No offset.
        * No thumb midpoint.
-       * No artificial offset.
+       * No artificial correction.
        */
       const fingertip =
         landmarks[
@@ -754,8 +761,8 @@ export class YuakeGestureTracker {
         ];
 
       /*
-       * Map the raw fingertip into the
-       * actual visible camera rectangle.
+       * Convert the exact fingertip through
+       * the real object-fit: cover transform.
        */
       const rawCursor =
         cameraToViewport(
@@ -764,10 +771,8 @@ export class YuakeGestureTracker {
         );
 
       /*
-       * GestureWatcher-style One-Euro filtering.
-       *
-       * We filter screen-space coordinates,
-       * because that's what the user sees.
+       * Smooth the already-correct screen
+       * coordinate.
        */
       const filtered =
         runtime.filter.filter(
@@ -776,15 +781,6 @@ export class YuakeGestureTracker {
             1000
         );
 
-      /*
-       * ------------------------------------------------
-       * VELOCITY
-       * ------------------------------------------------
-       *
-       * Used for the UI/debug information.
-       *
-       * It does NOT alter the cursor.
-       */
       const dt =
         clamp(
           (
@@ -820,16 +816,9 @@ export class YuakeGestureTracker {
         );
 
       /*
-       * ------------------------------------------------
-       * CURSOR
-       * ------------------------------------------------
+       * The cursor is the filtered fingertip.
        *
-       * The filtered fingertip itself is the cursor.
-       *
-       * No trailing interpolation.
-       * No dead-zone.
-       * No arbitrary offset.
-       * No fake cursor movement.
+       * No additional interpolation is applied.
        */
       const cursor = {
         x: clamp01(
@@ -1012,7 +1001,7 @@ export class YuakeGestureTracker {
     this.processingHeight =
       0;
 
-    cachedVideoRect =
+    cachedViewport =
       null;
   }
-      }
+  }
