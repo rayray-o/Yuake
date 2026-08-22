@@ -42,95 +42,64 @@ type Point2D = {
   y: number;
 };
 
-type HandRuntime = {
+type RuntimeState = {
   filter: OneEuroPointFilter;
-
   classifier: GestureClassifier;
 
   previousRaw: Point2D;
-
-  previousCursor: Point2D;
-
   previousTimestamp: number;
 
-  velocity: Point2D;
-
   lastSeen: number;
-
   initialized: boolean;
 };
 
-const INDEX_TIP =
-  8;
+type VideoRect = {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+};
 
-const MIN_DT =
-  0.001;
+const INDEX_TIP = 8;
 
-const MAX_DT =
-  0.100;
-
-/*
- * At low speed we want the
- * filtered position.
- *
- * At high speed we want the
- * raw fingertip.
- *
- * This is intentionally NOT
- * prediction.
- *
- * Prediction can make the cursor
- * lead the fingertip and feel wrong.
- */
-const RAW_BLEND_START =
-  0.35;
-
-const RAW_BLEND_FULL =
-  2.2;
+const MIN_DT = 0.001;
+const MAX_DT = 0.1;
 
 /*
- * Small dead-zone for tiny
- * MediaPipe landmark noise.
+ * Cache the displayed camera rectangle.
  *
- * This is applied only to
- * very slow movement.
+ * The camera is CSS object-fit: cover.
+ * MediaPipe coordinates are relative to
+ * the ORIGINAL camera frame.
+ *
+ * These are NOT the same coordinate space.
  */
-const MICRO_MOVEMENT =
-  0.0012;
+let rectCache: {
+  time: number;
+  rect: VideoRect | null;
+} = {
+  time: 0,
+  rect: null
+};
 
 function clamp(
   value: number,
   min: number,
   max: number
-): number {
+) {
   return Math.max(
     min,
-    Math.min(
-      max,
-      value
-    )
+    Math.min(max, value)
   );
 }
 
 function clamp01(
   value: number
-): number {
+) {
   return clamp(
     value,
     0,
     1
-  );
-}
-
-function lerp(
-  a: number,
-  b: number,
-  amount: number
-): number {
-  return (
-    a +
-    (b - a) *
-      amount
   );
 }
 
@@ -156,7 +125,7 @@ function toPoint3D(
   };
 }
 
-function handednessFromResult(
+function getHandedness(
   result: HandLandmarkerResult,
   index: number
 ): Handedness {
@@ -175,29 +144,210 @@ function handednessFromResult(
   return "Unknown";
 }
 
-function movementBlend(
-  speed: number
-): number {
+/**
+ * Calculate the actual visible portion
+ * of a video using CSS object-fit: cover.
+ *
+ * Example:
+ *
+ * Camera = 16:9
+ * Phone screen = 9:20
+ *
+ * The camera gets cropped heavily on
+ * the left/right.
+ *
+ * We must account for that crop.
+ */
+function getVideoContentRect(
+  video: HTMLVideoElement
+): VideoRect | null {
+  if (
+    !video.videoWidth ||
+    !video.videoHeight ||
+    !video.isConnected
+  ) {
+    return null;
+  }
+
+  const now =
+    performance.now();
+
+  if (
+    now -
+      rectCache.time <
+    100
+  ) {
+    return rectCache.rect;
+  }
+
+  const element =
+    video.getBoundingClientRect();
+
+  if (
+    element.width <= 0 ||
+    element.height <= 0
+  ) {
+    return null;
+  }
+
+  const videoAspect =
+    video.videoWidth /
+    video.videoHeight;
+
+  const elementAspect =
+    element.width /
+    element.height;
+
+  let renderedWidth =
+    element.width;
+
+  let renderedHeight =
+    element.height;
+
   /*
-   * speed is normalized
-   * screen-space units / second.
+   * object-fit: cover means:
    *
-   * The transition is smooth:
-   *
-   * 0.00 -> filtered
-   * 0.35 -> begin trusting raw
-   * 2.20 -> almost completely raw
+   * whichever dimension needs
+   * MORE scaling determines the scale.
    */
-  return clamp01(
+  if (
+    elementAspect >
+    videoAspect
+  ) {
+    /*
+     * Element is relatively wider
+     * than the camera frame.
+     *
+     * Height determines scale.
+     */
+    renderedHeight =
+      element.height;
+
+    renderedWidth =
+      renderedHeight *
+      videoAspect;
+  } else {
+    /*
+     * Element is relatively taller
+     * than the camera frame.
+     *
+     * Width determines scale.
+     */
+    renderedWidth =
+      element.width;
+
+    renderedHeight =
+      renderedWidth /
+      videoAspect;
+  }
+
+  /*
+   * Center the scaled video inside
+   * the element.
+   *
+   * The negative overflow represents
+   * the crop produced by object-fit cover.
+   */
+  const left =
+    element.left +
     (
-      speed -
-      RAW_BLEND_START
+      element.width -
+      renderedWidth
     ) /
+      2;
+
+  const top =
+    element.top +
     (
-      RAW_BLEND_FULL -
-      RAW_BLEND_START
+      element.height -
+      renderedHeight
+    ) /
+      2;
+
+  rectCache = {
+    time: now,
+
+    rect: {
+      left,
+      top,
+
+      width:
+        renderedWidth,
+
+      height:
+        renderedHeight
+    }
+  };
+
+  return rectCache.rect;
+}
+
+/**
+ * Convert MediaPipe camera-frame coordinates
+ * to actual viewport coordinates.
+ *
+ * IMPORTANT:
+ *
+ * YUAKE uses the rear camera and the page
+ * intentionally does NOT mirror it.
+ *
+ * Therefore:
+ *
+ * x = landmark.x
+ *
+ * NOT:
+ *
+ * x = 1 - landmark.x
+ */
+function cameraToViewport(
+  video: HTMLVideoElement,
+  point: Point3D
+): Point2D {
+  const rect =
+    getVideoContentRect(
+      video
+    );
+
+  if (!rect) {
+    return {
+      x:
+        point.x *
+        window.innerWidth,
+
+      y:
+        point.y *
+        window.innerHeight
+    };
+  }
+
+  const screenX =
+    rect.left +
+    point.x *
+      rect.width;
+
+  const screenY =
+    rect.top +
+    point.y *
+      rect.height;
+
+  /*
+   * GestureHand.cursor historically
+   * uses normalized viewport coordinates.
+   *
+   * Keep that API so the rest of YUAKE
+   * does not need to change.
+   */
+  return {
+    x: clamp01(
+      screenX /
+        window.innerWidth
+    ),
+
+    y: clamp01(
+      screenY /
+        window.innerHeight
     )
-  );
+  };
 }
 
 export class YuakeGestureTracker {
@@ -208,7 +358,7 @@ export class YuakeGestureTracker {
   private runtime =
     new Map<
       string,
-      HandRuntime
+      RuntimeState
     >();
 
   private initialized =
@@ -296,6 +446,7 @@ export class YuakeGestureTracker {
     const hands =
       this.convertResult(
         result,
+        video,
         safeTimestamp
       );
 
@@ -311,7 +462,8 @@ export class YuakeGestureTracker {
         safeTimestamp,
 
       detected:
-        hands.length > 0,
+        hands.length >
+        0,
 
       hands,
 
@@ -330,6 +482,7 @@ export class YuakeGestureTracker {
 
   private convertResult(
     result: HandLandmarkerResult,
+    video: HTMLVideoElement,
     timestamp: number
   ): GestureHand[] {
     const output:
@@ -376,7 +529,7 @@ export class YuakeGestureTracker {
             );
 
       const handedness =
-        handednessFromResult(
+        getHandedness(
           result,
           index
         );
@@ -397,15 +550,6 @@ export class YuakeGestureTracker {
           filter:
             new OneEuroPointFilter(
               {
-                /*
-                 * Low enough to remove
-                 * camera jitter.
-                 *
-                 * Fast movement is
-                 * handled by the
-                 * raw/filtered blend
-                 * below.
-                 */
                 minCutoff:
                   FILTER_MIN_CUTOFF,
 
@@ -421,22 +565,12 @@ export class YuakeGestureTracker {
             new GestureClassifier(),
 
           previousRaw: {
-            x: 0.5,
-            y: 0.5
-          },
-
-          previousCursor: {
-            x: 0.5,
-            y: 0.5
+            x: 0,
+            y: 0
           },
 
           previousTimestamp:
             timestamp,
-
-          velocity: {
-            x: 0,
-            y: 0
-          },
 
           lastSeen:
             timestamp,
@@ -455,10 +589,12 @@ export class YuakeGestureTracker {
         timestamp;
 
       /*
-       * THE ACTUAL FINGERTIP.
+       * =====================================================
+       * THE IMPORTANT PART
+       * =====================================================
        *
-       * MediaPipe landmark 8 =
-       * index finger tip.
+       * Landmark #8 is the physical
+       * index fingertip.
        */
       const fingertip =
         landmarks[
@@ -466,178 +602,112 @@ export class YuakeGestureTracker {
         ];
 
       /*
-       * Rear camera is not mirrored.
+       * Convert the fingertip from
+       * CAMERA SPACE → SCREEN SPACE.
        *
-       * Keep X exactly as MediaPipe
-       * reports it.
+       * This accounts for object-fit: cover.
        */
-      const rawCursor: Point2D = {
-        x: clamp01(
-          fingertip.x
-        ),
-
-        y: clamp01(
-          fingertip.y
-        )
-      };
+      const rawCursor =
+        cameraToViewport(
+          video,
+          fingertip
+        );
 
       if (
         !state.initialized
       ) {
-        state.filter.reset();
-
-        /*
-         * First frame snaps
-         * directly to the fingertip.
-         */
         state.previousRaw =
-          rawCursor;
-
-        state.previousCursor =
           rawCursor;
 
         state.previousTimestamp =
           timestamp;
 
-        state.velocity = {
-          x: 0,
-          y: 0
-        };
+        state.filter.reset();
 
         /*
-         * Prime the filter without
-         * creating an initial offset.
+         * Prime filter.
+         *
+         * This filter is NOT used for
+         * the visual cursor.
          */
         state.filter.filter(
           rawCursor,
-          timestamp / 1000
+          timestamp /
+            1000
         );
 
         state.initialized =
           true;
       }
 
-      /*
-       * Filtered position gives us
-       * stability during tiny hand
-       * movements.
-       */
-      const filtered =
-        state.filter.filter(
-          rawCursor,
-          timestamp / 1000
-        );
-
-      const deltaSeconds =
+      const dt =
         clamp(
           (
             timestamp -
             state.previousTimestamp
-          ) / 1000,
+          ) /
+            1000,
 
           MIN_DT,
           MAX_DT
         );
 
       /*
-       * IMPORTANT:
-       *
-       * Velocity is measured from
-       * RAW fingertip movement.
-       *
-       * Measuring it from the filtered
-       * cursor would hide fast movement
-       * and make the cursor trail.
+       * Velocity is calculated from
+       * the ACTUAL screen-space fingertip.
        */
-      const rawVelocity: Point2D = {
-        x:
-          (
-            rawCursor.x -
-            state.previousRaw.x
-          ) /
-          deltaSeconds,
+      const velocity =
+        {
+          x:
+            (
+              rawCursor.x -
+              state.previousRaw.x
+            ) /
+            dt,
 
-        y:
-          (
-            rawCursor.y -
-            state.previousRaw.y
-          ) /
-          deltaSeconds
-      };
+          y:
+            (
+              rawCursor.y -
+              state.previousRaw.y
+            ) /
+            dt
+        };
 
       const speed =
         Math.hypot(
-          rawVelocity.x,
-          rawVelocity.y
+          velocity.x,
+          velocity.y
         );
 
       /*
-       * Fast movement:
+       * Feed the filter for the
+       * non-cursor systems.
        *
-       * progressively trust the raw
-       * fingertip instead of the delayed
-       * filtered position.
+       * The visual cursor does NOT
+       * use this value.
        */
-      const rawAmount =
-        movementBlend(
-          speed
-        );
-
-      let cursor: Point2D = {
-        x: lerp(
-          filtered.x,
-          rawCursor.x,
-          rawAmount
-        ),
-
-        y: lerp(
-          filtered.y,
-          rawCursor.y,
-          rawAmount
-        )
-      };
+      state.filter.filter(
+        rawCursor,
+        timestamp /
+          1000
+      );
 
       /*
-       * At extremely tiny movement,
-       * retain the previous cursor
-       * to stop microscopic MediaPipe
-       * jitter.
+       * IMPORTANT:
        *
-       * This does NOT apply during
-       * actual movement.
+       * NO:
+       *
+       * lerp()
+       * prediction
+       * velocity compensation
+       * adaptive blend
+       * dead zone
+       *
+       * The cursor is literally the
+       * mapped fingertip.
        */
-      const movement =
-        Math.hypot(
-          rawCursor.x -
-            state.previousRaw.x,
-
-          rawCursor.y -
-            state.previousRaw.y
-        );
-
-      if (
-        movement <
-          MICRO_MOVEMENT &&
-        speed <
-          RAW_BLEND_START
-      ) {
-        cursor =
-          state.previousCursor;
-      }
-
-      /*
-       * Never allow the visual cursor
-       * to leave the normalized screen.
-       */
-      cursor = {
-        x: clamp01(
-          cursor.x
-        ),
-
-        y: clamp01(
-          cursor.y
-        )
-      };
+      const cursor =
+        rawCursor;
 
       const classification =
         state.classifier.classify(
@@ -657,8 +727,7 @@ export class YuakeGestureTracker {
       const confidence =
         this.calculateConfidence(
           result,
-          index,
-          speed
+          index
         );
 
       const hand:
@@ -678,8 +747,7 @@ export class YuakeGestureTracker {
 
         cursor,
 
-        velocity:
-          rawVelocity,
+        velocity,
 
         speed,
 
@@ -709,9 +777,6 @@ export class YuakeGestureTracker {
       state.previousRaw =
         rawCursor;
 
-      state.previousCursor =
-        cursor;
-
       state.previousTimestamp =
         timestamp;
 
@@ -729,43 +794,32 @@ export class YuakeGestureTracker {
 
   private calculateConfidence(
     result: HandLandmarkerResult,
-    index: number,
-    speed: number
-  ): number {
+    index: number
+  ) {
     const category =
       result.handednesses?.[
         index
       ]?.[0];
 
-    const score =
-      category?.score ??
-      0.8;
-
-    /*
-     * Do not punish ordinary
-     * fast movement heavily.
-     */
-    const motionPenalty =
-      Math.min(
-        speed / 20,
-        0.12
-      );
-
     return clamp01(
-      score -
-        motionPenalty
+      category?.score ??
+        0.8
     );
   }
 
   private selectPrimaryHand(
     hands: GestureHand[]
-  ): GestureHand | null {
+  ) {
     if (
       hands.length === 0
     ) {
       return null;
     }
 
+    /*
+     * Preserve the current behavior:
+     * pinch takes priority.
+     */
     const pinching =
       hands.find(
         hand =>
@@ -824,5 +878,10 @@ export class YuakeGestureTracker {
 
     this.processingTime =
       0;
+
+    rectCache = {
+      time: 0,
+      rect: null
+    };
   }
-    }
+        }
