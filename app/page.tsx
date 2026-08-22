@@ -22,14 +22,32 @@ type Status =
   | "live"
   | "error";
 
-const EMPTY_FRAME: GestureFrame = {
-  timestamp: 0,
-  detected: false,
-  hands: [],
-  primaryHand: null,
-  frameTime: 0,
-  processingTime: 0
-};
+type VideoWithFrameCallback =
+  HTMLVideoElement & {
+    requestVideoFrameCallback?: (
+      callback: (
+        now: number,
+        metadata: {
+          mediaTime: number;
+          presentedFrames: number;
+        }
+      ) => void
+    ) => number;
+
+    cancelVideoFrameCallback?: (
+      handle: number
+    ) => void;
+  };
+
+const EMPTY_FRAME:
+  GestureFrame = {
+    timestamp: 0,
+    detected: false,
+    hands: [],
+    primaryHand: null,
+    frameTime: 0,
+    processingTime: 0
+  };
 
 export default function Home() {
   const videoRef =
@@ -39,18 +57,32 @@ export default function Home() {
     useRef<HTMLDivElement>(null);
 
   const streamRef =
-    useRef<MediaStream | null>(null);
+    useRef<MediaStream | null>(
+      null
+    );
 
   const trackerRef =
-    useRef<YuakeGestureTracker | null>(null);
-
-  const animationRef =
-    useRef<number | null>(null);
+    useRef<YuakeGestureTracker | null>(
+      null
+    );
 
   const runningRef =
     useRef(false);
 
-  const lastUiUpdateRef =
+  const rafRef =
+    useRef<number | null>(
+      null
+    );
+
+  const videoCallbackRef =
+    useRef<number | null>(
+      null
+    );
+
+  const lastPresentedFrame =
+    useRef(-1);
+
+  const lastUiUpdate =
     useRef(0);
 
   const [status, setStatus] =
@@ -67,9 +99,20 @@ export default function Home() {
   const [showDebug, setShowDebug] =
     useState(true);
 
+  /*
+   * --------------------------------------------------
+   * DIRECT CURSOR RENDERER
+   * --------------------------------------------------
+   *
+   * This function never uses React state.
+   *
+   * It writes directly to the cursor.
+   */
   const updateCursor =
     useCallback(
-      (hand: GestureHand | null) => {
+      (
+        hand: GestureHand | null
+      ) => {
         const cursor =
           cursorRef.current;
 
@@ -78,25 +121,25 @@ export default function Home() {
         }
 
         if (!hand) {
-          cursor.style.opacity = "0";
+          cursor.style.opacity =
+            "0";
+
           return;
         }
 
         /*
-         * The tracker now gives us the
-         * actual fingertip position.
-         *
-         * Move the DOM element directly.
-         * React does NOT need to render
-         * another component for every frame.
+         * Use transform rather than
+         * left/top so the browser can
+         * move the cursor on the compositor.
          */
-        cursor.style.left =
-          `${hand.cursor.x * 100}%`;
+        cursor.style.transform =
+          `translate3d(` +
+          `${hand.cursor.x * 100}vw,` +
+          `${hand.cursor.y * 100}vh,` +
+          `0)`;
 
-        cursor.style.top =
-          `${hand.cursor.y * 100}%`;
-
-        cursor.style.opacity = "1";
+        cursor.style.opacity =
+          "1";
 
         cursor.classList.toggle(
           "pinch",
@@ -123,15 +166,34 @@ export default function Home() {
       runningRef.current =
         false;
 
+      const video =
+        videoRef.current as
+          | VideoWithFrameCallback
+          | null;
+
       if (
-        animationRef.current !==
+        video &&
+        videoCallbackRef.current !==
+          null &&
+        video.cancelVideoFrameCallback
+      ) {
+        video.cancelVideoFrameCallback(
+          videoCallbackRef.current
+        );
+      }
+
+      videoCallbackRef.current =
+        null;
+
+      if (
+        rafRef.current !==
         null
       ) {
         cancelAnimationFrame(
-          animationRef.current
+          rafRef.current
         );
 
-        animationRef.current =
+        rafRef.current =
           null;
       }
 
@@ -142,18 +204,23 @@ export default function Home() {
 
       streamRef.current
         ?.getTracks()
-        .forEach(track => {
-          track.stop();
-        });
+        .forEach(
+          track =>
+            track.stop()
+        );
 
       streamRef.current =
         null;
 
       if (videoRef.current) {
         videoRef.current.pause();
+
         videoRef.current.srcObject =
           null;
       }
+
+      lastPresentedFrame.current =
+        -1;
 
       updateCursor(null);
 
@@ -164,9 +231,45 @@ export default function Home() {
       setStatus("idle");
     }, [updateCursor]);
 
-  const processLoop =
+  /*
+   * UI update is deliberately throttled.
+   *
+   * The cursor itself NEVER goes through
+   * this state update.
+   */
+  const publishFrame =
     useCallback(
-      (timestamp: number) => {
+      (
+        result: GestureFrame,
+        timestamp: number
+      ) => {
+        if (
+          timestamp -
+            lastUiUpdate.current <
+          80
+        ) {
+          return;
+        }
+
+        lastUiUpdate.current =
+          timestamp;
+
+        setFrame(result);
+      },
+      []
+    );
+
+  /*
+   * --------------------------------------------------
+   * CAMERA FRAME LOOP
+   * --------------------------------------------------
+   */
+  const processFrame =
+    useCallback(
+      (
+        timestamp: number,
+        presentedFrames?: number
+      ) => {
         if (
           !runningRef.current
         ) {
@@ -185,22 +288,36 @@ export default function Home() {
           video.readyState <
             HTMLMediaElement.HAVE_CURRENT_DATA
         ) {
-          animationRef.current =
-            requestAnimationFrame(
-              processLoop
-            );
+          scheduleFallback();
 
           return;
         }
 
+        /*
+         * Prevent processing the exact
+         * same camera frame twice.
+         */
+        if (
+          presentedFrames !==
+            undefined &&
+          presentedFrames ===
+            lastPresentedFrame.current
+        ) {
+          return;
+        }
+
+        if (
+          presentedFrames !==
+          undefined
+        ) {
+          lastPresentedFrame.current =
+            presentedFrames;
+        }
+
         try {
           /*
-           * Process every animation frame.
-           *
-           * The old code intentionally
-           * discarded frames to stay around
-           * 30 FPS. That creates visible
-           * tracking latency.
+           * Detect using the timestamp
+           * belonging to this actual frame.
            */
           const result =
             tracker.process(
@@ -209,34 +326,25 @@ export default function Home() {
             );
 
           /*
-           * Critical:
+           * THIS is the hot path.
            *
-           * Cursor movement happens
-           * immediately and independently
-           * from React state.
+           * No React render.
+           * No setState.
+           * No waiting.
            */
           updateCursor(
             result.primaryHand
           );
 
-          /*
-           * UI/debug information does NOT
-           * need 60+ React renders per second.
-           *
-           * Keep it around 12 FPS.
-           */
-          if (
-            timestamp -
-              lastUiUpdateRef.current >=
-            80
-          ) {
-            lastUiUpdateRef.current =
-              timestamp;
-
-            setFrame(result);
-          }
+          publishFrame(
+            result,
+            timestamp
+          );
         } catch (err) {
-          console.error(err);
+          console.error(
+            "YUAKE tracking error:",
+            err
+          );
 
           setError(
             err instanceof Error
@@ -250,17 +358,115 @@ export default function Home() {
 
           return;
         }
-
-        animationRef.current =
-          requestAnimationFrame(
-            processLoop
-          );
       },
       [
+        publishFrame,
         stopCamera,
         updateCursor
       ]
     );
+
+  const scheduleFallback =
+    useCallback(() => {
+      if (
+        !runningRef.current
+      ) {
+        return;
+      }
+
+      if (
+        rafRef.current !==
+        null
+      ) {
+        cancelAnimationFrame(
+          rafRef.current
+        );
+      }
+
+      rafRef.current =
+        requestAnimationFrame(
+          timestamp => {
+            processFrame(
+              timestamp
+            );
+          }
+        );
+    }, [processFrame]);
+
+  /*
+   * The callback must be installed
+   * after the video has begun playing.
+   */
+  const startFrameLoop =
+    useCallback(() => {
+      if (
+        !runningRef.current
+      ) {
+        return;
+      }
+
+      const video =
+        videoRef.current as
+          | VideoWithFrameCallback
+          | null;
+
+      if (
+        !video
+      ) {
+        return;
+      }
+
+      /*
+       * Preferred path:
+       *
+       * browser tells us when a new
+       * camera frame has actually been
+       * presented.
+       */
+      if (
+        video.requestVideoFrameCallback
+      ) {
+        const callback =
+          (
+            now: number,
+            metadata: {
+              mediaTime: number;
+              presentedFrames: number;
+            }
+          ) => {
+            if (
+              !runningRef.current
+            ) {
+              return;
+            }
+
+            processFrame(
+              now,
+              metadata.presentedFrames
+            );
+
+            videoCallbackRef.current =
+              video.requestVideoFrameCallback!(
+                callback
+              );
+          };
+
+        videoCallbackRef.current =
+          video.requestVideoFrameCallback(
+            callback
+          );
+
+        return;
+      }
+
+      /*
+       * Older browser fallback.
+       */
+      scheduleFallback();
+    }, [
+      processFrame,
+      scheduleFallback
+    ]);
 
   const startCamera =
     useCallback(
@@ -276,7 +482,8 @@ export default function Home() {
 
         try {
           if (
-            !navigator.mediaDevices?.getUserMedia
+            !navigator.mediaDevices
+              ?.getUserMedia
           ) {
             throw new Error(
               "Camera access is not supported by this browser."
@@ -305,6 +512,7 @@ export default function Home() {
 
                   frameRate: {
                     ideal: 60,
+
                     min: 30
                   }
                 },
@@ -329,8 +537,8 @@ export default function Home() {
             stream;
 
           /*
-           * Rear camera should not
-           * be horizontally mirrored.
+           * Rear camera:
+           * do NOT mirror it.
            */
           video.style.transform =
             "none";
@@ -348,15 +556,15 @@ export default function Home() {
           runningRef.current =
             true;
 
-          lastUiUpdateRef.current =
+          lastPresentedFrame.current =
+            -1;
+
+          lastUiUpdate.current =
             performance.now();
 
           setStatus("live");
 
-          animationRef.current =
-            requestAnimationFrame(
-              processLoop
-            );
+          startFrameLoop();
         } catch (err) {
           console.error(err);
 
@@ -365,9 +573,10 @@ export default function Home() {
 
           streamRef.current
             ?.getTracks()
-            .forEach(track => {
-              track.stop();
-            });
+            .forEach(
+              track =>
+                track.stop()
+            );
 
           streamRef.current =
             null;
@@ -381,7 +590,7 @@ export default function Home() {
           setStatus("error");
         }
       },
-      [processLoop]
+      [startFrameLoop]
     );
 
   useEffect(() => {
@@ -450,8 +659,8 @@ export default function Home() {
           </h1>
 
           <p>
-            Your hand becomes the
-            interface.
+            Your hand becomes
+            the interface.
           </p>
 
           <button
@@ -547,7 +756,9 @@ export default function Home() {
             ref={cursorRef}
             className="handCursor"
             style={{
-              opacity: 0
+              opacity: 0,
+              left: 0,
+              top: 0
             }}
           >
             <div className="cursorCore" />
@@ -739,4 +950,4 @@ function DebugPanel({
       </div>
     </aside>
   );
-}
+      }
