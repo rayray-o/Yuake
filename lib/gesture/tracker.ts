@@ -5,16 +5,10 @@ import {
 } from "@mediapipe/tasks-vision";
 
 import {
-  DETECTION_CONFIDENCE,
-  FILTER_BETA,
-  FILTER_D_CUTOFF,
-  FILTER_MIN_CUTOFF,
   HAND_LOST_GRACE_MS,
   HAND_MODEL_URL,
   MAX_HANDS,
-  MEDIAPIPE_WASM_URL,
-  PRESENCE_CONFIDENCE,
-  TRACKING_CONFIDENCE
+  MEDIAPIPE_WASM_URL
 } from "./constants";
 
 import {
@@ -46,11 +40,10 @@ type RuntimeState = {
   filter: OneEuroPointFilter;
   classifier: GestureClassifier;
 
-  previousRaw: Point2D;
-  previousTimestamp: number;
+  previousCursor: Point2D;
+  previousTime: number;
 
   lastSeen: number;
-  initialized: boolean;
 };
 
 type VideoRect = {
@@ -62,25 +55,22 @@ type VideoRect = {
 
 const INDEX_TIP = 8;
 
-const MIN_DT = 0.001;
-const MAX_DT = 0.1;
-
 /*
- * Cache the displayed camera rectangle.
+ * These are the values used by
+ * GestureWatcher's One-Euro filter.
  *
- * The camera is CSS object-fit: cover.
- * MediaPipe coordinates are relative to
- * the ORIGINAL camera frame.
- *
- * These are NOT the same coordinate space.
+ * Low latency first.
  */
-let rectCache: {
-  time: number;
-  rect: VideoRect | null;
-} = {
-  time: 0,
-  rect: null
-};
+const FILTER_MIN_CUTOFF = 1.2;
+const FILTER_BETA = 0.01;
+const FILTER_D_CUTOFF = 1.0;
+
+let cachedVideoRect:
+  | {
+      rect: VideoRect | null;
+      time: number;
+    }
+  | null = null;
 
 function clamp(
   value: number,
@@ -129,34 +119,30 @@ function getHandedness(
   result: HandLandmarkerResult,
   index: number
 ): Handedness {
-  const category =
+  const label =
     result.handednesses?.[
       index
     ]?.[0]?.categoryName;
 
   if (
-    category === "Left" ||
-    category === "Right"
+    label === "Left" ||
+    label === "Right"
   ) {
-    return category;
+    return label;
   }
 
   return "Unknown";
 }
 
-/**
- * Calculate the actual visible portion
- * of a video using CSS object-fit: cover.
+/*
+ * YUAKE uses object-fit: cover.
  *
- * Example:
+ * MediaPipe coordinates are relative
+ * to the complete camera frame.
  *
- * Camera = 16:9
- * Phone screen = 9:20
- *
- * The camera gets cropped heavily on
- * the left/right.
- *
- * We must account for that crop.
+ * This function returns the actual
+ * portion of that frame visible
+ * on the screen.
  */
 function getVideoContentRect(
   video: HTMLVideoElement
@@ -173,11 +159,12 @@ function getVideoContentRect(
     performance.now();
 
   if (
+    cachedVideoRect &&
     now -
-      rectCache.time <
-    100
+      cachedVideoRect.time <
+      250
   ) {
-    return rectCache.rect;
+    return cachedVideoRect.rect;
   }
 
   const element =
@@ -190,69 +177,44 @@ function getVideoContentRect(
     return null;
   }
 
-  const videoAspect =
+  const sourceAspect =
     video.videoWidth /
     video.videoHeight;
 
-  const elementAspect =
+  const destinationAspect =
     element.width /
     element.height;
 
-  let renderedWidth =
+  let width =
     element.width;
 
-  let renderedHeight =
+  let height =
     element.height;
 
-  /*
-   * object-fit: cover means:
-   *
-   * whichever dimension needs
-   * MORE scaling determines the scale.
-   */
   if (
-    elementAspect >
-    videoAspect
+    destinationAspect >
+    sourceAspect
   ) {
-    /*
-     * Element is relatively wider
-     * than the camera frame.
-     *
-     * Height determines scale.
-     */
-    renderedHeight =
+    height =
       element.height;
 
-    renderedWidth =
-      renderedHeight *
-      videoAspect;
+    width =
+      height *
+      sourceAspect;
   } else {
-    /*
-     * Element is relatively taller
-     * than the camera frame.
-     *
-     * Width determines scale.
-     */
-    renderedWidth =
+    width =
       element.width;
 
-    renderedHeight =
-      renderedWidth /
-      videoAspect;
+    height =
+      width /
+      sourceAspect;
   }
 
-  /*
-   * Center the scaled video inside
-   * the element.
-   *
-   * The negative overflow represents
-   * the crop produced by object-fit cover.
-   */
   const left =
     element.left +
     (
       element.width -
-      renderedWidth
+      width
     ) /
       2;
 
@@ -260,44 +222,30 @@ function getVideoContentRect(
     element.top +
     (
       element.height -
-      renderedHeight
+      height
     ) /
       2;
 
-  rectCache = {
-    time: now,
-
-    rect: {
-      left,
-      top,
-
-      width:
-        renderedWidth,
-
-      height:
-        renderedHeight
-    }
+  const rect = {
+    left,
+    top,
+    width,
+    height
   };
 
-  return rectCache.rect;
+  cachedVideoRect = {
+    rect,
+    time: now
+  };
+
+  return rect;
 }
 
-/**
- * Convert MediaPipe camera-frame coordinates
- * to actual viewport coordinates.
+/*
+ * Camera coordinate -> viewport coordinate.
  *
- * IMPORTANT:
- *
- * YUAKE uses the rear camera and the page
- * intentionally does NOT mirror it.
- *
- * Therefore:
- *
- * x = landmark.x
- *
- * NOT:
- *
- * x = 1 - landmark.x
+ * YUAKE uses the rear camera and the
+ * displayed video is NOT mirrored.
  */
 function cameraToViewport(
   video: HTMLVideoElement,
@@ -320,31 +268,24 @@ function cameraToViewport(
     };
   }
 
-  const screenX =
+  const viewportX =
     rect.left +
     point.x *
       rect.width;
 
-  const screenY =
+  const viewportY =
     rect.top +
     point.y *
       rect.height;
 
-  /*
-   * GestureHand.cursor historically
-   * uses normalized viewport coordinates.
-   *
-   * Keep that API so the rest of YUAKE
-   * does not need to change.
-   */
   return {
     x: clamp01(
-      screenX /
+      viewportX /
         window.innerWidth
     ),
 
     y: clamp01(
-      screenY /
+      viewportY /
         window.innerHeight
     )
   };
@@ -364,10 +305,10 @@ export class YuakeGestureTracker {
   private initialized =
     false;
 
-  private lastFrameTime =
+  private processingTime =
     0;
 
-  private processingTime =
+  private lastTimestamp =
     0;
 
   async initialize() {
@@ -398,16 +339,7 @@ export class YuakeGestureTracker {
             "VIDEO",
 
           numHands:
-            MAX_HANDS,
-
-          minHandDetectionConfidence:
-            DETECTION_CONFIDENCE,
-
-          minHandPresenceConfidence:
-            PRESENCE_CONFIDENCE,
-
-          minTrackingConfidence:
-            TRACKING_CONFIDENCE
+            MAX_HANDS
         }
       );
 
@@ -430,10 +362,14 @@ export class YuakeGestureTracker {
     const start =
       performance.now();
 
+    /*
+     * MediaPipe requires monotonically
+     * increasing timestamps.
+     */
     const safeTimestamp =
       Math.max(
         timestamp,
-        this.lastFrameTime +
+        this.lastTimestamp +
           0.001
       );
 
@@ -450,7 +386,7 @@ export class YuakeGestureTracker {
         safeTimestamp
       );
 
-    this.lastFrameTime =
+    this.lastTimestamp =
       safeTimestamp;
 
     this.processingTime =
@@ -485,7 +421,7 @@ export class YuakeGestureTracker {
     video: HTMLVideoElement,
     timestamp: number
   ): GestureHand[] {
-    const output:
+    const hands:
       GestureHand[] = [];
 
     for (
@@ -540,13 +476,13 @@ export class YuakeGestureTracker {
           ? `hand-${index}`
           : handedness;
 
-      let state =
+      let runtime =
         this.runtime.get(
           id
         );
 
-      if (!state) {
-        state = {
+      if (!runtime) {
+        runtime = {
           filter:
             new OneEuroPointFilter(
               {
@@ -564,36 +500,33 @@ export class YuakeGestureTracker {
           classifier:
             new GestureClassifier(),
 
-          previousRaw: {
+          previousCursor: {
             x: 0,
             y: 0
           },
 
-          previousTimestamp:
+          previousTime:
             timestamp,
 
           lastSeen:
-            timestamp,
-
-          initialized:
-            false
+            timestamp
         };
 
         this.runtime.set(
           id,
-          state
+          runtime
         );
       }
 
-      state.lastSeen =
+      runtime.lastSeen =
         timestamp;
 
       /*
-       * =====================================================
-       * THE IMPORTANT PART
-       * =====================================================
+       * --------------------------------------------------
+       * RAW FINGERTIP
+       * --------------------------------------------------
        *
-       * Landmark #8 is the physical
+       * MediaPipe landmark 8 is the
        * index fingertip.
        */
       const fingertip =
@@ -602,10 +535,8 @@ export class YuakeGestureTracker {
         ];
 
       /*
-       * Convert the fingertip from
-       * CAMERA SPACE → SCREEN SPACE.
-       *
-       * This accounts for object-fit: cover.
+       * Map it into the ACTUAL
+       * displayed camera rectangle.
        */
       const rawCursor =
         cameraToViewport(
@@ -613,65 +544,55 @@ export class YuakeGestureTracker {
           fingertip
         );
 
-      if (
-        !state.initialized
-      ) {
-        state.previousRaw =
-          rawCursor;
-
-        state.previousTimestamp =
-          timestamp;
-
-        state.filter.reset();
-
-        /*
-         * Prime filter.
-         *
-         * This filter is NOT used for
-         * the visual cursor.
-         */
-        state.filter.filter(
+      /*
+       * GestureWatcher's One-Euro
+       * approach:
+       *
+       * filter screen-space coordinates,
+       * not raw camera coordinates.
+       *
+       * This is important because
+       * screen-space movement is what
+       * the user actually sees.
+       */
+      const filtered =
+        runtime.filter.filter(
           rawCursor,
           timestamp /
             1000
         );
 
-        state.initialized =
-          true;
-      }
-
+      /*
+       * Calculate screen-space velocity
+       * from the raw fingertip.
+       */
       const dt =
         clamp(
           (
             timestamp -
-            state.previousTimestamp
+            runtime.previousTime
           ) /
             1000,
 
-          MIN_DT,
-          MAX_DT
+          0.001,
+          0.1
         );
 
-      /*
-       * Velocity is calculated from
-       * the ACTUAL screen-space fingertip.
-       */
-      const velocity =
-        {
-          x:
-            (
-              rawCursor.x -
-              state.previousRaw.x
-            ) /
-            dt,
+      const velocity = {
+        x:
+          (
+            rawCursor.x -
+            runtime.previousCursor.x
+          ) /
+          dt,
 
-          y:
-            (
-              rawCursor.y -
-              state.previousRaw.y
-            ) /
-            dt
-        };
+        y:
+          (
+            rawCursor.y -
+            runtime.previousCursor.y
+          ) /
+          dt
+      };
 
       const speed =
         Math.hypot(
@@ -680,37 +601,27 @@ export class YuakeGestureTracker {
         );
 
       /*
-       * Feed the filter for the
-       * non-cursor systems.
-       *
-       * The visual cursor does NOT
-       * use this value.
-       */
-      state.filter.filter(
-        rawCursor,
-        timestamp /
-          1000
-      );
-
-      /*
        * IMPORTANT:
        *
-       * NO:
+       * No adaptive interpolation.
+       * No prediction.
+       * No dead-zone.
        *
-       * lerp()
-       * prediction
-       * velocity compensation
-       * adaptive blend
-       * dead zone
-       *
-       * The cursor is literally the
-       * mapped fingertip.
+       * The One-Euro output is the
+       * cursor position.
        */
-      const cursor =
-        rawCursor;
+      const cursor = {
+        x: clamp01(
+          filtered.x
+        ),
+
+        y: clamp01(
+          filtered.y
+        )
+      };
 
       const classification =
-        state.classifier.classify(
+        runtime.classifier.classify(
           landmarks
         );
 
@@ -725,13 +636,12 @@ export class YuakeGestureTracker {
         );
 
       const confidence =
-        this.calculateConfidence(
+        this.getConfidence(
           result,
           index
         );
 
-      const hand:
-        GestureHand = {
+      hands.push({
         id,
 
         handedness,
@@ -744,6 +654,8 @@ export class YuakeGestureTracker {
           worldLandmarks[0],
 
         palm,
+
+        palmNormal,
 
         cursor,
 
@@ -763,8 +675,6 @@ export class YuakeGestureTracker {
         fingers:
           classification.fingers,
 
-        palmNormal,
-
         confidence,
 
         visible:
@@ -772,37 +682,30 @@ export class YuakeGestureTracker {
 
         lastSeen:
           timestamp
-      };
+      });
 
-      state.previousRaw =
+      runtime.previousCursor =
         rawCursor;
 
-      state.previousTimestamp =
+      runtime.previousTime =
         timestamp;
-
-      output.push(
-        hand
-      );
     }
 
     this.removeLostHands(
       timestamp
     );
 
-    return output;
+    return hands;
   }
 
-  private calculateConfidence(
+  private getConfidence(
     result: HandLandmarkerResult,
     index: number
   ) {
-    const category =
+    return clamp01(
       result.handednesses?.[
         index
-      ]?.[0];
-
-    return clamp01(
-      category?.score ??
+      ]?.[0]?.score ??
         0.8
     );
   }
@@ -816,10 +719,6 @@ export class YuakeGestureTracker {
       return null;
     }
 
-    /*
-     * Preserve the current behavior:
-     * pinch takes priority.
-     */
     const pinching =
       hands.find(
         hand =>
@@ -843,17 +742,17 @@ export class YuakeGestureTracker {
     for (
       const [
         id,
-        state
+        runtime
       ] of this.runtime
     ) {
       if (
         timestamp -
-          state.lastSeen >
+          runtime.lastSeen >
         HAND_LOST_GRACE_MS
       ) {
-        state.filter.reset();
+        runtime.filter.reset();
 
-        state.classifier.reset();
+        runtime.classifier.reset();
 
         this.runtime.delete(
           id
@@ -873,15 +772,13 @@ export class YuakeGestureTracker {
     this.initialized =
       false;
 
-    this.lastFrameTime =
-      0;
-
     this.processingTime =
       0;
 
-    rectCache = {
-      time: 0,
-      rect: null
-    };
+    this.lastTimestamp =
+      0;
+
+    cachedVideoRect =
+      null;
   }
-        }
+}
