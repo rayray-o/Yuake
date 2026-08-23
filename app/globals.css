@@ -330,6 +330,44 @@ a {
     transform;
 }
 
+.grabObject {
+  position: absolute;
+  z-index: 12;
+
+  width: 90px;
+  height: 90px;
+
+  border-radius: 16px;
+
+  background: rgba(255, 255, 255, 0.12);
+  border: 2px solid rgba(255, 255, 255, 0.5);
+
+  backdrop-filter: blur(2px);
+
+  transform:
+    translate(
+      -50%,
+      -50%
+    );
+
+  pointer-events: none;
+
+  will-change: transform;
+
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.grabObject.grabbed {
+  background: rgba(120, 200, 255, 0.25);
+  border-color: #78c8ff;
+
+  box-shadow:
+    0 0 24px rgba(120, 200, 255, 0.6);
+}
+
 .cursorCore {
   position: absolute;
   left: 50%;
