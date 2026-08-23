@@ -5,10 +5,13 @@ import {
 } from "@mediapipe/tasks-vision";
 
 import {
+  DETECTION_CONFIDENCE,
   HAND_LOST_GRACE_MS,
   HAND_MODEL_URL,
   MAX_HANDS,
-  MEDIAPIPE_WASM_URL
+  MEDIAPIPE_WASM_URL,
+  PRESENCE_CONFIDENCE,
+  TRACKING_CONFIDENCE
 } from "./constants";
 
 import {
@@ -444,7 +447,24 @@ export class YuakeGestureTracker {
             "VIDEO",
 
           numHands:
-            MAX_HANDS
+            MAX_HANDS,
+
+          /*
+           * These constants existed in
+           * constants.ts but were never
+           * actually passed here - the
+           * detector was silently running
+           * on generic defaults instead of
+           * the app's tuned values.
+           */
+          minHandDetectionConfidence:
+            DETECTION_CONFIDENCE,
+
+          minHandPresenceConfidence:
+            PRESENCE_CONFIDENCE,
+
+          minTrackingConfidence:
+            TRACKING_CONFIDENCE
         }
       );
 
@@ -888,9 +908,30 @@ export class YuakeGestureTracker {
         )
       };
 
+      /*
+       * IMPORTANT: pass WORLD landmarks, not
+       * image-space landmarks.
+       *
+       * Image-space landmarks are 2D screen
+       * position plus a rough, perspective-
+       * distorted depth value. Measuring
+       * thumb-to-index distance in that space
+       * is only reliable when the hand faces
+       * the camera fairly directly - rotate
+       * the hand sideways and the same
+       * physical gap projects to a very
+       * different apparent distance.
+       *
+       * World landmarks are a real 3D
+       * reconstruction of the hand in actual
+       * physical units, independent of camera
+       * angle - the same physical pinch
+       * measures the same regardless of how
+       * the hand is rotated toward the camera.
+       */
       const classification =
         runtime.classifier.classify(
-          landmarks
+          worldLandmarks
         );
 
       const palm =
