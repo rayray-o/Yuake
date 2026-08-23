@@ -69,6 +69,7 @@ type Diagnostics = {
   videoDelayMs: number;
   jitter: number;
   loopMs: number;
+  isolated: boolean;
 };
 
 const EMPTY_FRAME:
@@ -93,7 +94,8 @@ const EMPTY_DIAGNOSTICS:
     resolution: "--",
     videoDelayMs: 0,
     jitter: 0,
-    loopMs: 0
+    loopMs: 0,
+    isolated: false
   };
 
 export default function Home() {
@@ -489,7 +491,13 @@ export default function Home() {
 
         trackFps,
 
-        jitter
+        jitter,
+
+        isolated:
+          typeof window !==
+            "undefined" &&
+          window.crossOriginIsolated ===
+            true
       };
 
       diagnosticRef.current =
@@ -1666,6 +1674,15 @@ function DebugPanel({
           <span>DROPPED</span>
           <strong>
             {diagnostics.droppedFrames}
+          </strong>
+        </div>
+
+        <div className="debugStat">
+          <span>ISOLATED</span>
+          <strong>
+            {diagnostics.isolated
+              ? "YES"
+              : "NO"}
           </strong>
         </div>
 
