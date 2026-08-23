@@ -15,6 +15,10 @@ import {
   CursorPredictor
 } from "../lib/gesture/predictor";
 
+import {
+  GrabManager
+} from "../lib/gesture/grab";
+
 import type {
   GestureFrame,
   GestureHand
@@ -133,6 +137,16 @@ export default function Home() {
 
   const renderLoopRef =
     useRef<number | null>(
+      null
+    );
+
+  const grabManagerRef =
+    useRef(
+      new GrabManager()
+    );
+
+  const objectRef =
+    useRef<HTMLDivElement>(
       null
     );
 
@@ -348,6 +362,39 @@ export default function Home() {
           `0)`;
       }
 
+      const box =
+        objectRef.current;
+
+      const objects =
+        grabManagerRef.current.getObjects();
+
+      const grabbedId =
+        grabManagerRef.current.getGrabbedId();
+
+      if (
+        box &&
+        objects[0]
+      ) {
+        /*
+         * Setting style.transform here fully
+         * REPLACES the CSS class's transform,
+         * so the -50%/-50% centering must be
+         * included here too, or the box renders
+         * offset by half its own size.
+         */
+        box.style.transform =
+          `translate3d(` +
+          `${objects[0].x}px,` +
+          `${objects[0].y}px,` +
+          `0) translate(-50%, -50%)`;
+
+        box.classList.toggle(
+          "grabbed",
+          grabbedId ===
+            objects[0].id
+        );
+      }
+
       renderLoopRef.current =
         requestAnimationFrame(
           renderCursorLoop
@@ -542,6 +589,11 @@ export default function Home() {
       );
 
       updateCursor(null);
+
+      grabManagerRef.current.update(
+        null,
+        performance.now()
+      );
 
       setFrame(
         EMPTY_FRAME
@@ -760,6 +812,11 @@ export default function Home() {
            */
           updateCursor(
             result.primaryHand
+          );
+
+          grabManagerRef.current.update(
+            result.primaryHand,
+            after
           );
 
           /*
@@ -1101,6 +1158,22 @@ export default function Home() {
   }, [stopCamera]);
 
   /*
+   * Register one placeholder grabbable box, centered
+   * on screen, so the grab/release mechanic can be
+   * tested before any real 3D objects exist.
+   */
+  useEffect(() => {
+    grabManagerRef.current.setObjects([
+      {
+        id: "box1",
+        x: window.innerWidth / 2,
+        y: window.innerHeight / 2,
+        radius: 70
+      }
+    ]);
+  }, []);
+
+  /*
    * Refresh diagnostic numbers once per second.
    *
    * This is completely separate from the
@@ -1300,6 +1373,15 @@ export default function Home() {
               POINT
             </div>
           </div>
+
+          <div
+            ref={objectRef}
+            className="grabObject"
+            style={{
+              left: 0,
+              top: 0
+            }}
+          />
 
           <footer className="bottomBar">
             <div>
