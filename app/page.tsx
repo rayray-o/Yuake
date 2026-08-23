@@ -371,10 +371,30 @@ export default function Home() {
       const grabbedId =
         grabManagerRef.current.getGrabbedId();
 
+      const predictedObject =
+        grabManagerRef.current.predict(
+          performance.now()
+        );
+
       if (
         box &&
         objects[0]
       ) {
+        /*
+         * While grabbed, use the predictor's
+         * glide-smoothed position so the object
+         * doesn't stair-step between MediaPipe
+         * detections. At rest, just draw its
+         * last known (static) position.
+         */
+        const drawX =
+          predictedObject?.x ??
+          objects[0].x;
+
+        const drawY =
+          predictedObject?.y ??
+          objects[0].y;
+
         /*
          * Setting style.transform here fully
          * REPLACES the CSS class's transform,
@@ -384,8 +404,8 @@ export default function Home() {
          */
         box.style.transform =
           `translate3d(` +
-          `${objects[0].x}px,` +
-          `${objects[0].y}px,` +
+          `${drawX}px,` +
+          `${drawY}px,` +
           `0) translate(-50%, -50%)`;
 
         box.classList.toggle(
