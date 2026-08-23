@@ -130,8 +130,13 @@ const PROCESSING_WIDTH_STEP = 32;
  * Reassess every N frames rather than every single
  * frame, so a couple of noisy samples don't cause
  * the resolution to flicker up and down.
+ *
+ * Lower on purpose: on a slow device, 20 frames at
+ * ~200-400ms each was a 4-8 second wait before the
+ * FIRST adjustment ever happened. 10 still smooths
+ * out noise while reacting meaningfully faster.
  */
-const ADAPT_SAMPLE_COUNT = 20;
+const ADAPT_SAMPLE_COUNT = 10;
 
 let cachedViewport:
   | {
@@ -499,20 +504,19 @@ export class YuakeGestureTracker {
               HAND_MODEL_URL,
 
             /*
-             * TESTING: was "GPU".
-             *
-             * 200ms inference with cross-origin
-             * isolation confirmed active suggests
-             * GPU delegate overhead (frame
-             * upload/readback) may be the actual
-             * bottleneck on this device, not
-             * threading. Now that multi-threaded
-             * WASM is available, CPU delegate can
-             * use multiple cores + SIMD - worth a
-             * direct comparison.
+             * CONFIRMED via real device testing:
+             * CPU delegate measured ~400ms on a
+             * Samsung F22 (Helio G80-class GPU),
+             * roughly double GPU delegate's
+             * ~200ms. GPU was actually the
+             * faster path here - the earlier
+             * "GPU overhead" theory was wrong.
+             * Reverted. Don't re-test this
+             * without a clear reason; it's a
+             * measured result, not a guess.
              */
             delegate:
-              "CPU"
+              "GPU"
           },
 
           runningMode:
