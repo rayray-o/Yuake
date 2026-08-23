@@ -1033,12 +1033,22 @@ export default function Home() {
                       "environment"
                   },
 
+                  /*
+                   * Was requesting up to 1920x1080,
+                   * but everything downstream gets
+                   * downscaled to MAX_PROCESSING_WIDTH
+                   * (480px) before MediaPipe ever sees
+                   * it. Capturing beyond ~720p buys
+                   * zero detection benefit and costs
+                   * real per-frame decode/copy time,
+                   * especially on mobile.
+                   */
                   width: {
-                    ideal: 1920
+                    ideal: 1280
                   },
 
                   height: {
-                    ideal: 1080
+                    ideal: 720
                   },
 
                   frameRate: {
