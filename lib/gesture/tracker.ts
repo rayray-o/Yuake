@@ -295,7 +295,7 @@ function getViewportRect(
  * This is the important correction that keeps
  * the cursor physically attached to landmark 8.
  */
-function cameraToViewport(
+export function cameraToViewport(
   video: HTMLVideoElement,
   point: Point3D
 ): Point2D {
