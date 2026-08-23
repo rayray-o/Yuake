@@ -330,6 +330,18 @@ a {
     transform;
 }
 
+.skeletonCanvas {
+  position: absolute;
+  z-index: 11;
+  top: 0;
+  left: 0;
+
+  width: 100vw;
+  height: 100vh;
+
+  pointer-events: none;
+}
+
 .grabObject {
   position: absolute;
   z-index: 12;
