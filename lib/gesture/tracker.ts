@@ -88,21 +88,50 @@ const FILTER_D_CUTOFF = 1.0;
  * processing frame.
  */
 /*
- * Lower processing width = less compute per
- * frame = faster inference, regardless of
- * delegate (GPU or CPU) or threading.
+ * --------------------------------------------------
+ * ADAPTIVE PROCESSING RESOLUTION
+ * --------------------------------------------------
  *
- * 480 was a reasonable starting point, but if
- * inference time itself is the bottleneck (not
- * threading/isolation), this is the most direct
- * lever available. The hand-landmark model is
- * reasonably robust down to a few hundred px;
- * this trades a little max precision for real
- * frame rate. Test INFER (ms) in the debug
- * panel before/after to see the actual impact
- * on this device.
+ * A fixed processing width means a fast device
+ * (e.g. iPhone-class GPU) never gets to use its
+ * spare headroom for better precision, and a slow
+ * device (e.g. budget Android GPU) is stuck paying
+ * a cost it can't afford - it just runs at a low,
+ * laggy effective frame rate forever.
+ *
+ * Instead, the tracker watches its OWN measured
+ * inference time and automatically steps the
+ * processing resolution up or down to converge on
+ * a target inference budget. Same code, same
+ * targets, for every device - it just calibrates
+ * itself to whatever hardware it's actually running
+ * on, live, with no per-device special casing.
  */
-const MAX_PROCESSING_WIDTH = 320;
+const INITIAL_PROCESSING_WIDTH = 320;
+const MIN_PROCESSING_WIDTH = 176;
+const MAX_PROCESSING_WIDTH_CAP = 480;
+
+/*
+ * If average inference time drifts above this,
+ * the device is struggling - shrink the input.
+ */
+const TARGET_INFER_MS_HIGH = 45;
+
+/*
+ * If average inference time is comfortably below
+ * this, the device has spare headroom - grow the
+ * input for better precision.
+ */
+const TARGET_INFER_MS_LOW = 18;
+
+const PROCESSING_WIDTH_STEP = 32;
+
+/*
+ * Reassess every N frames rather than every single
+ * frame, so a couple of noisy samples don't cause
+ * the resolution to flicker up and down.
+ */
+const ADAPT_SAMPLE_COUNT = 20;
 
 let cachedViewport:
   | {
@@ -434,6 +463,21 @@ export class YuakeGestureTracker {
   private processingHeight =
     0;
 
+  /*
+   * The CURRENT target width the adaptive
+   * system has converged on for this device.
+   * Starts at a neutral default and self-
+   * adjusts from there.
+   */
+  private processingWidthTarget =
+    INITIAL_PROCESSING_WIDTH;
+
+  private inferenceSamples:
+    number[] = [];
+
+  private framesSinceAdapt =
+    0;
+
   async initialize() {
     if (
       this.initialized
@@ -454,8 +498,21 @@ export class YuakeGestureTracker {
             modelAssetPath:
               HAND_MODEL_URL,
 
+            /*
+             * TESTING: was "GPU".
+             *
+             * 200ms inference with cross-origin
+             * isolation confirmed active suggests
+             * GPU delegate overhead (frame
+             * upload/readback) may be the actual
+             * bottleneck on this device, not
+             * threading. Now that multi-threaded
+             * WASM is available, CPU delegate can
+             * use multiple cores + SIMD - worth a
+             * direct comparison.
+             */
             delegate:
-              "GPU"
+              "CPU"
           },
 
           runningMode:
@@ -551,7 +608,7 @@ export class YuakeGestureTracker {
       Math.min(
         1,
 
-        MAX_PROCESSING_WIDTH /
+        this.processingWidthTarget /
           sourceWidth
       );
 
@@ -679,6 +736,10 @@ export class YuakeGestureTracker {
       performance.now() -
       start;
 
+    this.adaptProcessingWidth(
+      this.processingTime
+    );
+
     return {
       timestamp:
         safeTimestamp,
@@ -700,6 +761,95 @@ export class YuakeGestureTracker {
       processingTime:
         this.processingTime
     };
+  }
+
+  /*
+   * Step the processing resolution up or down
+   * to converge on a target inference budget,
+   * based on this device's own measured
+   * performance. Called once per processed
+   * frame; only actually adjusts every
+   * ADAPT_SAMPLE_COUNT frames.
+   */
+  private adaptProcessingWidth(
+    latestInferenceMs: number
+  ) {
+    this.inferenceSamples.push(
+      latestInferenceMs
+    );
+
+    if (
+      this.inferenceSamples
+        .length >
+      ADAPT_SAMPLE_COUNT
+    ) {
+      this.inferenceSamples.shift();
+    }
+
+    this.framesSinceAdapt++;
+
+    if (
+      this.framesSinceAdapt <
+        ADAPT_SAMPLE_COUNT ||
+      this.inferenceSamples
+        .length <
+        ADAPT_SAMPLE_COUNT
+    ) {
+      return;
+    }
+
+    this.framesSinceAdapt =
+      0;
+
+    const average =
+      this.inferenceSamples.reduce(
+        (sum, value) =>
+          sum + value,
+        0
+      ) /
+      this.inferenceSamples
+        .length;
+
+    if (
+      average >
+        TARGET_INFER_MS_HIGH &&
+      this.processingWidthTarget >
+        MIN_PROCESSING_WIDTH
+    ) {
+      this.processingWidthTarget =
+        Math.max(
+          MIN_PROCESSING_WIDTH,
+
+          this.processingWidthTarget -
+            PROCESSING_WIDTH_STEP
+        );
+
+      return;
+    }
+
+    if (
+      average <
+        TARGET_INFER_MS_LOW &&
+      this.processingWidthTarget <
+        MAX_PROCESSING_WIDTH_CAP
+    ) {
+      this.processingWidthTarget =
+        Math.min(
+          MAX_PROCESSING_WIDTH_CAP,
+
+          this.processingWidthTarget +
+            PROCESSING_WIDTH_STEP
+        );
+    }
+  }
+
+  /*
+   * Exposed for the debug panel, so the
+   * adaptive behavior is actually visible
+   * instead of invisible under the hood.
+   */
+  getProcessingWidth() {
+    return this.processingWidthTarget;
   }
 
   private convertResult(
@@ -1113,6 +1263,15 @@ export class YuakeGestureTracker {
       0;
 
     this.processingHeight =
+      0;
+
+    this.processingWidthTarget =
+      INITIAL_PROCESSING_WIDTH;
+
+    this.inferenceSamples =
+      [];
+
+    this.framesSinceAdapt =
       0;
 
     cachedViewport =
