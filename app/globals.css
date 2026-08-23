@@ -339,10 +339,8 @@ a {
 
   border-radius: 16px;
 
-  background: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.16);
   border: 2px solid rgba(255, 255, 255, 0.5);
-
-  backdrop-filter: blur(2px);
 
   transform:
     translate(
@@ -365,7 +363,7 @@ a {
   border-color: #78c8ff;
 
   box-shadow:
-    0 0 24px rgba(120, 200, 255, 0.6);
+    0 0 12px rgba(120, 200, 255, 0.5);
 }
 
 .cursorCore {
