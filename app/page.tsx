@@ -1497,94 +1497,75 @@ function DebugPanel({
         YUAKE / VISION
       </div>
 
-      <div className="debugRow">
-        <span>
-          DETECTED
-        </span>
+      <div className="debugGrid">
+        <div className="debugStat">
+          <span>DETECTED</span>
+          <strong>
+            {frame.detected
+              ? "YES"
+              : "NO"}
+          </strong>
+        </div>
 
-        <strong>
-          {frame.detected
-            ? "YES"
-            : "NO"}
-        </strong>
-      </div>
+        <div className="debugStat">
+          <span>HANDS</span>
+          <strong>
+            {frame.hands.length}
+          </strong>
+        </div>
 
-      <div className="debugRow">
-        <span>
-          HANDS
-        </span>
+        <div className="debugStat">
+          <span>POSE</span>
+          <strong>
+            {hand?.pose ??
+              "none"}
+          </strong>
+        </div>
 
-        <strong>
-          {frame.hands.length}
-        </strong>
-      </div>
+        <div className="debugStat">
+          <span>PINCH</span>
+          <strong>
+            {hand?.pinch
+              ? "ACTIVE"
+              : "OFF"}
+          </strong>
+        </div>
 
-      <div className="debugRow">
-        <span>
-          POSE
-        </span>
+        <div className="debugStat">
+          <span>STRENGTH</span>
+          <strong>
+            {Math.round(
+              (
+                hand?.pinchStrength ??
+                0
+              ) * 100
+            )}
+            %
+          </strong>
+        </div>
 
-        <strong>
-          {hand?.pose ??
-            "none"}
-        </strong>
-      </div>
-
-      <div className="debugRow">
-        <span>
-          PINCH
-        </span>
-
-        <strong>
-          {hand?.pinch
-            ? "ACTIVE"
-            : "OFF"}
-        </strong>
-      </div>
-
-      <div className="debugRow">
-        <span>
-          STRENGTH
-        </span>
-
-        <strong>
-          {Math.round(
-            (
-              hand?.pinchStrength ??
+        <div className="debugStat">
+          <span>SPEED</span>
+          <strong>
+            {(
+              hand?.speed ??
               0
-            ) * 100
-          )}
-          %
-        </strong>
-      </div>
+            ).toFixed(2)}
+          </strong>
+        </div>
 
-      <div className="debugRow">
-        <span>
-          SPEED
-        </span>
-
-        <strong>
-          {(
-            hand?.speed ??
-            0
-          ).toFixed(2)}
-        </strong>
-      </div>
-
-      <div className="debugRow">
-        <span>
-          CONFIDENCE
-        </span>
-
-        <strong>
-          {Math.round(
-            (
-              hand?.confidence ??
-              0
-            ) * 100
-          )}
-          %
-        </strong>
+        <div className="debugStat">
+          <span>CONF</span>
+          <strong>
+            {Math.round(
+              (
+                hand?.confidence ??
+                0
+              ) * 100
+            )}
+            %
+          </strong>
+        </div>
       </div>
 
       <div className="debugDivider" />
@@ -1593,135 +1574,104 @@ function DebugPanel({
         PIPELINE
       </div>
 
-      <div className="debugRow">
-        <span>
-          CAM FPS
-        </span>
+      <div className="debugGrid">
+        <div className="debugStat">
+          <span>CAM FPS</span>
+          <strong>
+            {diagnostics.cameraFps.toFixed(
+              1
+            )}
+          </strong>
+        </div>
 
-        <strong>
-          {diagnostics.cameraFps.toFixed(
-            1
-          )}
-        </strong>
-      </div>
+        <div className="debugStat">
+          <span>TRACK FPS</span>
+          <strong>
+            {diagnostics.trackFps.toFixed(
+              1
+            )}
+          </strong>
+        </div>
 
-      <div className="debugRow">
-        <span>
-          TRACK FPS
-        </span>
+        <div className="debugStat">
+          <span>INFER</span>
+          <strong>
+            {diagnostics.inferenceMs.toFixed(
+              1
+            )}
+            ms
+          </strong>
+        </div>
 
-        <strong>
-          {diagnostics.trackFps.toFixed(
-            1
-          )}
-        </strong>
-      </div>
+        <div className="debugStat">
+          <span>LOOP</span>
+          <strong>
+            {diagnostics.loopMs.toFixed(
+              1
+            )}
+            ms
+          </strong>
+        </div>
 
-      <div className="debugRow">
-        <span>
-          INFER
-        </span>
+        <div className="debugStat">
+          <span>CALLBACK</span>
+          <strong>
+            {diagnostics.callbackDelayMs.toFixed(
+              1
+            )}
+            ms
+          </strong>
+        </div>
 
-        <strong>
-          {diagnostics.inferenceMs.toFixed(
-            1
-          )}
-          ms
-        </strong>
-      </div>
+        <div className="debugStat">
+          <span>DECODE</span>
+          <strong>
+            {diagnostics.decodeMs.toFixed(
+              1
+            )}
+            ms
+          </strong>
+        </div>
 
-      <div className="debugRow">
-        <span>
-          LOOP
-        </span>
+        <div className="debugStat">
+          <span>VIDEO DLY</span>
+          <strong>
+            {diagnostics.videoDelayMs.toFixed(
+              1
+            )}
+            ms
+          </strong>
+        </div>
 
-        <strong>
-          {diagnostics.loopMs.toFixed(
-            1
-          )}
-          ms
-        </strong>
-      </div>
+        <div className="debugStat">
+          <span>JITTER</span>
+          <strong>
+            {diagnostics.jitter.toFixed(
+              2
+            )}
+          </strong>
+        </div>
 
-      <div className="debugRow">
-        <span>
-          CALLBACK
-        </span>
+        <div className="debugStat">
+          <span>DROPPED</span>
+          <strong>
+            {diagnostics.droppedFrames}
+          </strong>
+        </div>
 
-        <strong>
-          {diagnostics.callbackDelayMs.toFixed(
-            1
-          )}
-          ms
-        </strong>
-      </div>
+        <div className="debugStat">
+          <span>FRAME</span>
+          <strong>
+            {diagnostics.frameNumber}
+          </strong>
+        </div>
 
-      <div className="debugRow">
-        <span>
-          DECODE
-        </span>
-
-        <strong>
-          {diagnostics.decodeMs.toFixed(
-            1
-          )}
-          ms
-        </strong>
-      </div>
-
-      <div className="debugRow">
-        <span>
-          VIDEO DELAY
-        </span>
-
-        <strong>
-          {diagnostics.videoDelayMs.toFixed(
-            1
-          )}
-          ms
-        </strong>
-      </div>
-
-      <div className="debugRow">
-        <span>
-          JITTER
-        </span>
-
-        <strong>
-          {diagnostics.jitter.toFixed(
-            2
-          )}
-        </strong>
-      </div>
-
-      <div className="debugRow">
-        <span>
-          DROPPED
-        </span>
-
-        <strong>
-          {diagnostics.droppedFrames}
-        </strong>
-      </div>
-
-      <div className="debugRow">
-        <span>
-          FRAME
-        </span>
-
-        <strong>
-          {diagnostics.frameNumber}
-        </strong>
-      </div>
-
-      <div className="debugRow">
-        <span>
-          RES
-        </span>
-
-        <strong>
-          {diagnostics.resolution}
-        </strong>
+        <div className="debugStat debugStatWide">
+          <span>RES</span>
+          <strong>
+            {diagnostics.resolution}
+          </strong>
+        </div>
       </div>
     </aside>
   );
