@@ -140,9 +140,7 @@ export default function Home() {
     );
 
   const renderLoopRef =
-    useRef<number | null>(
-      null
-    );
+    useRef<number | null>(null);
 
   const grabManagerRef =
     useRef(
@@ -153,6 +151,26 @@ export default function Home() {
     useRef<HTMLDivElement>(
       null
     );
+
+  /*
+   * Keep the latest hand outside React state.
+   *
+   * The render loop must never wait for React to commit
+   * a state update before moving the cursor or object.
+   */
+  const latestHandRef =
+    useRef<GestureHand | null>(
+      null
+    );
+
+  /*
+   * Latest high-resolution tracking timestamp.
+   *
+   * This lets the display loop and interaction system share
+   * a consistent clock without introducing an extra timer.
+   */
+  const latestTrackingTimeRef =
+    useRef(0);
 
   /*
    * --------------------------------------------------
@@ -222,6 +240,16 @@ export default function Home() {
         const cursor =
           cursorRef.current;
 
+        /*
+         * Always store the latest hand immediately.
+         * This is deliberately outside React.
+         */
+        latestHandRef.current =
+          hand;
+
+        latestTrackingTimeRef.current =
+          performance.now();
+
         if (!cursor) {
           return;
         }
@@ -234,13 +262,10 @@ export default function Home() {
         }
 
         /*
-         * Position is NOT set here anymore.
+         * Feed the real tracker output into the cursor
+         * predictor immediately.
          *
-         * The predictor/render loop owns position
-         * so the dot can glide at full screen
-         * refresh rate between real detections
-         * instead of teleporting whenever a new
-         * MediaPipe result arrives.
+         * The display loop consumes the predicted position.
          */
         predictorRef.current.update(
           hand.cursor,
@@ -272,12 +297,8 @@ export default function Home() {
          * ------------------------------------------------
          * FINGERTIP JITTER MEASUREMENT
          * ------------------------------------------------
-         *
-         * This measures movement between consecutive
-         * tracker outputs.
-         *
-         * It does NOT alter the cursor.
          */
+
         const point = {
           x: hand.cursor.x,
           y: hand.cursor.y
@@ -303,9 +324,6 @@ export default function Home() {
               dy * dy
             );
 
-          /*
-           * Only retain the recent window.
-           */
           diagnostic.jitterSamples.push(
             distance
           );
@@ -326,104 +344,159 @@ export default function Home() {
 
   /*
    * --------------------------------------------------
-   * CURSOR RENDER LOOP
+   * CURSOR + GRAB OBJECT RENDER LOOP
    * --------------------------------------------------
    *
-   * Runs every animation frame (screen refresh rate),
-   * completely decoupled from how often MediaPipe
-   * finishes a detection. Draws the PREDICTED
-   * position, so the dot glides smoothly even when
-   * inference is slower than the display.
+   * IMPORTANT:
+   *
+   * MediaPipe does NOT control visual movement anymore.
+   *
+   * MediaPipe gives us the newest measurement.
+   *
+   * The predictor then estimates where the fingertip/object
+   * should be NOW.
+   *
+   * requestAnimationFrame draws that prediction at display
+   * refresh rate.
+   *
+   * This is what prevents the box from stepping between
+   * inference frames.
    */
 
   const renderCursorLoop =
-    useCallback(() => {
-      if (
-        !runningRef.current
-      ) {
+    useCallback(
+      (
+        rafTimestamp?: number
+      ) => {
+        if (
+          !runningRef.current
+        ) {
+          renderLoopRef.current =
+            null;
+
+          return;
+        }
+
+        /*
+         * Use the browser's RAF timestamp when available.
+         * Fall back to performance.now() only if necessary.
+         */
+        const now =
+          rafTimestamp ??
+          performance.now();
+
+        /*
+         * ------------------------------------------------
+         * CURSOR
+         * ------------------------------------------------
+         */
+
+        const predicted =
+          predictorRef.current.predict(
+            now
+          );
+
+        const cursor =
+          cursorRef.current;
+
+        if (
+          predicted &&
+          cursor
+        ) {
+          cursor.style.transform =
+            `translate3d(` +
+            `${predicted.x * 100}vw,` +
+            `${predicted.y * 100}vh,` +
+            `0)`;
+        }
+
+        /*
+         * ------------------------------------------------
+         * GRABBED OBJECT
+         * ------------------------------------------------
+         */
+
+        const box =
+          objectRef.current;
+
+        const grabManager =
+          grabManagerRef.current;
+
+        const objects =
+          grabManager.getObjects();
+
+        const grabbedId =
+          grabManager.getGrabbedId();
+
+        /*
+         * THIS IS THE IMPORTANT PART.
+         *
+         * The object predictor runs once every display frame.
+         *
+         * It does NOT wait for another MediaPipe frame.
+         */
+        const predictedObject =
+          grabbedId
+            ? grabManager.predict(
+                now
+              )
+            : null;
+
+        if (
+          box &&
+          objects.length > 0
+        ) {
+          const object =
+            objects[0];
+
+          /*
+           * When grabbed:
+           *
+           *     predictedObject
+           *
+           * is the display-time position.
+           *
+           * When released:
+           *
+           *     object.x / object.y
+           *
+           * remains the static position.
+           */
+          const drawX =
+            predictedObject?.x ??
+            object.x;
+
+          const drawY =
+            predictedObject?.y ??
+            object.y;
+
+          /*
+           * Keep the visual center locked to the actual
+           * tracked/predicted object position.
+           */
+          box.style.transform =
+            `translate3d(` +
+            `${drawX}px,` +
+            `${drawY}px,` +
+            `0) translate(-50%, -50%)`;
+
+          box.classList.toggle(
+            "grabbed",
+            grabbedId ===
+              object.id
+          );
+        }
+
+        /*
+         * Schedule the next display frame.
+         */
         renderLoopRef.current =
-          null;
-
-        return;
-      }
-
-      const predicted =
-        predictorRef.current.predict(
-          performance.now()
-        );
-
-      const cursor =
-        cursorRef.current;
-
-      if (
-        predicted &&
-        cursor
-      ) {
-        cursor.style.transform =
-          `translate3d(` +
-          `${predicted.x * 100}vw,` +
-          `${predicted.y * 100}vh,` +
-          `0)`;
-      }
-
-      const box =
-        objectRef.current;
-
-      const objects =
-        grabManagerRef.current.getObjects();
-
-      const grabbedId =
-        grabManagerRef.current.getGrabbedId();
-
-      const predictedObject =
-        grabManagerRef.current.predict(
-          performance.now()
-        );
-
-      if (
-        box &&
-        objects[0]
-      ) {
-        /*
-         * While grabbed, use the predictor's
-         * glide-smoothed position so the object
-         * doesn't stair-step between MediaPipe
-         * detections. At rest, just draw its
-         * last known (static) position.
-         */
-        const drawX =
-          predictedObject?.x ??
-          objects[0].x;
-
-        const drawY =
-          predictedObject?.y ??
-          objects[0].y;
-
-        /*
-         * Setting style.transform here fully
-         * REPLACES the CSS class's transform,
-         * so the -50%/-50% centering must be
-         * included here too, or the box renders
-         * offset by half its own size.
-         */
-        box.style.transform =
-          `translate3d(` +
-          `${drawX}px,` +
-          `${drawY}px,` +
-          `0) translate(-50%, -50%)`;
-
-        box.classList.toggle(
-          "grabbed",
-          grabbedId ===
-            objects[0].id
-        );
-      }
-
-      renderLoopRef.current =
-        requestAnimationFrame(
-          renderCursorLoop
-        );
-    }, []);
+          requestAnimationFrame(
+            renderCursorLoop
+          );
+      },
+      []
+    );
 
   /*
    * --------------------------------------------------
@@ -595,6 +668,12 @@ export default function Home() {
       lastPresentedFrame.current =
         -1;
 
+      latestHandRef.current =
+        null;
+
+      latestTrackingTimeRef.current =
+        0;
+
       diagnosticWindowRef.current = {
         start: 0,
 
@@ -662,9 +741,10 @@ export default function Home() {
         setFrame(result);
 
         /*
-         * Diagnostic display is also deliberately
-         * throttled. It must NEVER be part of the
-         * cursor hot path.
+         * Diagnostics are deliberately throttled.
+         *
+         * They never participate in the movement
+         * pipeline.
          */
         publishDiagnostics();
       },
@@ -788,11 +868,6 @@ export default function Home() {
             0;
         }
 
-        /*
-         * Chrome exposes processingDuration
-         * on requestVideoFrameCallback metadata
-         * when available.
-         */
         diagnosticRef.current.decodeMs =
           metadata?.processingDuration ??
           0;
@@ -840,31 +915,43 @@ export default function Home() {
             before;
 
           /*
-           * Cursor is updated immediately.
+           * ------------------------------------------------
+           * CURSOR HOT PATH
+           * ------------------------------------------------
            *
-           * No React state.
+           * This is synchronous and never goes through
+           * React state.
            */
           updateCursor(
             result.primaryHand
           );
 
+          /*
+           * ------------------------------------------------
+           * PINCH / GRAB HOT PATH
+           * ------------------------------------------------
+           *
+           * Grab state is updated immediately from the newest
+           * pinch result.
+           *
+           * The visual box itself is NOT moved here.
+           *
+           * The RAF loop moves it from the predicted state.
+           */
           grabManagerRef.current.update(
             result.primaryHand,
             after
           );
 
+          latestTrackingTimeRef.current =
+            after;
+
           /*
            * ------------------------------------------------
-           * FRAME AGE
+           * VIDEO DELAY
            * ------------------------------------------------
-           *
-           * This is NOT pretending we can directly
-           * recover sensor capture time.
-           *
-           * It measures the delay between the
-           * presentation callback timestamp and
-           * processing completion.
            */
+
           if (
             metadata?.presentationTime !==
               undefined
@@ -1042,21 +1129,14 @@ export default function Home() {
             await navigator.mediaDevices.getUserMedia(
               {
                 video: {
+                  /*
+                   * REAR CAMERA
+                   */
                   facingMode: {
                     ideal:
                       "environment"
                   },
 
-                  /*
-                   * Was requesting up to 1920x1080,
-                   * but everything downstream gets
-                   * downscaled to MAX_PROCESSING_WIDTH
-                   * (480px) before MediaPipe ever sees
-                   * it. Capturing beyond ~720p buys
-                   * zero detection benefit and costs
-                   * real per-frame decode/copy time,
-                   * especially on mobile.
-                   */
                   width: {
                     ideal: 1280
                   },
@@ -1092,8 +1172,7 @@ export default function Home() {
             stream;
 
           /*
-           * Rear camera.
-           * Never mirror it.
+           * Rear camera must never be mirrored.
            */
           video.style.transform =
             "none";
@@ -1108,9 +1187,6 @@ export default function Home() {
 
           await tracker.initialize();
 
-          /*
-           * Reset diagnostics.
-           */
           diagnosticWindowRef.current = {
             start:
               performance.now(),
@@ -1147,6 +1223,22 @@ export default function Home() {
             diagnosticRef.current
           );
 
+          /*
+           * Reset interaction state before entering LIVE.
+           */
+          predictorRef.current.clear();
+
+          grabManagerRef.current.update(
+            null,
+            performance.now()
+          );
+
+          latestHandRef.current =
+            null;
+
+          latestTrackingTimeRef.current =
+            performance.now();
+
           runningRef.current =
             true;
 
@@ -1158,8 +1250,16 @@ export default function Home() {
 
           setStatus("live");
 
+          /*
+           * Start camera/inference loop.
+           */
           startFrameLoop();
 
+          /*
+           * Start display-rate prediction loop.
+           *
+           * This is independent of MediaPipe.
+           */
           renderLoopRef.current =
             requestAnimationFrame(
               renderCursorLoop
@@ -1195,6 +1295,12 @@ export default function Home() {
       ]
     );
 
+  /*
+   * --------------------------------------------------
+   * CLEANUP
+   * --------------------------------------------------
+   */
+
   useEffect(() => {
     return () => {
       stopCamera();
@@ -1202,27 +1308,35 @@ export default function Home() {
   }, [stopCamera]);
 
   /*
-   * Register one placeholder grabbable box, centered
-   * on screen, so the grab/release mechanic can be
-   * tested before any real 3D objects exist.
+   * --------------------------------------------------
+   * TEST GRABBABLE OBJECT
+   * --------------------------------------------------
    */
+
   useEffect(() => {
     grabManagerRef.current.setObjects([
       {
         id: "box1",
-        x: window.innerWidth / 2,
-        y: window.innerHeight / 2,
+
+        x:
+          window.innerWidth /
+          2,
+
+        y:
+          window.innerHeight /
+          2,
+
         radius: 70
       }
     ]);
   }, []);
 
   /*
-   * Refresh diagnostic numbers once per second.
-   *
-   * This is completely separate from the
-   * cursor renderer.
+   * --------------------------------------------------
+   * DIAGNOSTIC REFRESH
+   * --------------------------------------------------
    */
+
   useEffect(() => {
     if (
       status !== "live"
