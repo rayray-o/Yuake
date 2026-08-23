@@ -87,7 +87,22 @@ const FILTER_D_CUTOFF = 1.0;
  * MediaPipe receives a smaller same-aspect-ratio
  * processing frame.
  */
-const MAX_PROCESSING_WIDTH = 480;
+/*
+ * Lower processing width = less compute per
+ * frame = faster inference, regardless of
+ * delegate (GPU or CPU) or threading.
+ *
+ * 480 was a reasonable starting point, but if
+ * inference time itself is the bottleneck (not
+ * threading/isolation), this is the most direct
+ * lever available. The hand-landmark model is
+ * reasonably robust down to a few hundred px;
+ * this trades a little max precision for real
+ * frame rate. Test INFER (ms) in the debug
+ * panel before/after to see the actual impact
+ * on this device.
+ */
+const MAX_PROCESSING_WIDTH = 320;
 
 let cachedViewport:
   | {
