@@ -8,7 +8,8 @@ import {
 } from "react";
 
 import {
-  YuakeGestureTracker
+  YuakeGestureTracker,
+  cameraToViewport
 } from "../lib/gesture/tracker";
 
 import {
@@ -100,6 +101,41 @@ const EMPTY_DIAGNOSTICS:
     processingWidth: 0
   };
 
+/*
+ * Standard 21-point MediaPipe hand landmark
+ * skeleton connections (bone pairs), used to
+ * draw the overlay skeleton on the video.
+ */
+const HAND_CONNECTIONS:
+  Array<[number, number]> = [
+    [0, 1],
+    [1, 2],
+    [2, 3],
+    [3, 4],
+
+    [0, 5],
+    [5, 6],
+    [6, 7],
+    [7, 8],
+
+    [5, 9],
+    [9, 10],
+    [10, 11],
+    [11, 12],
+
+    [9, 13],
+    [13, 14],
+    [14, 15],
+    [15, 16],
+
+    [13, 17],
+    [17, 18],
+    [18, 19],
+    [19, 20],
+
+    [0, 17]
+  ];
+
 export default function Home() {
   const videoRef =
     useRef<HTMLVideoElement>(null);
@@ -152,6 +188,16 @@ export default function Home() {
   const objectRef =
     useRef<HTMLDivElement>(
       null
+    );
+
+  const skeletonCanvasRef =
+    useRef<HTMLCanvasElement>(
+      null
+    );
+
+  const latestHandsRef =
+    useRef<GestureHand[]>(
+      []
     );
 
   /*
@@ -419,10 +465,239 @@ export default function Home() {
         );
       }
 
+      drawSkeleton();
+
       renderLoopRef.current =
         requestAnimationFrame(
           renderCursorLoop
         );
+    }, []);
+
+  /*
+   * --------------------------------------------------
+   * SKELETON OVERLAY
+   * --------------------------------------------------
+   *
+   * Draws the full 21-point hand skeleton plus a
+   * pinch-pair indicator for each finger (thumb-
+   * index, thumb-middle, thumb-ring, thumb-pinky),
+   * using landmarks and touch/strength data that
+   * were already being computed but never shown.
+   *
+   * Runs every animation frame using whatever the
+   * MOST RECENT real detection was - unlike the
+   * cursor, this isn't glide-predicted, so it will
+   * visibly update at inference rate rather than
+   * 60fps. That's an acceptable tradeoff for a
+   * skeleton overlay (a HUD element) vs. the
+   * primary interaction point.
+   */
+  const drawSkeleton =
+    useCallback(() => {
+      const canvas =
+        skeletonCanvasRef.current;
+
+      const video =
+        videoRef.current;
+
+      const ctx =
+        canvas?.getContext(
+          "2d"
+        );
+
+      if (
+        !canvas ||
+        !video ||
+        !ctx
+      ) {
+        return;
+      }
+
+      const width =
+        canvas.width;
+
+      const height =
+        canvas.height;
+
+      ctx.clearRect(
+        0,
+        0,
+        width,
+        height
+      );
+
+      const hands =
+        latestHandsRef.current;
+
+      if (
+        !hands.length
+      ) {
+        return;
+      }
+
+      for (
+        const hand of hands
+      ) {
+        const points =
+          hand.landmarks.map(
+            landmark =>
+              cameraToViewport(
+                video,
+                landmark
+              )
+          );
+
+        ctx.strokeStyle =
+          "rgba(255, 255, 255, 0.5)";
+
+        ctx.lineWidth = 1.5;
+
+        for (
+          const [
+            a,
+            b
+          ] of HAND_CONNECTIONS
+        ) {
+          const pa =
+            points[a];
+
+          const pb =
+            points[b];
+
+          if (
+            !pa ||
+            !pb
+          ) {
+            continue;
+          }
+
+          ctx.beginPath();
+
+          ctx.moveTo(
+            pa.x * width,
+            pa.y * height
+          );
+
+          ctx.lineTo(
+            pb.x * width,
+            pb.y * height
+          );
+
+          ctx.stroke();
+        }
+
+        ctx.fillStyle =
+          "rgba(255, 255, 255, 0.85)";
+
+        for (
+          const point of points
+        ) {
+          ctx.beginPath();
+
+          ctx.arc(
+            point.x * width,
+            point.y * height,
+            2.5,
+            0,
+            Math.PI * 2
+          );
+
+          ctx.fill();
+        }
+
+        /*
+         * Pinch-pair indicators: thumb to each
+         * of the other four fingertips, drawn
+         * at the midpoint, sized/colored by
+         * how close that finger actually is to
+         * a touch (fingers.*.strength /
+         * .touch), matching the reference
+         * video's multi-finger pinch display.
+         */
+        const thumbTip =
+          points[4];
+
+        const pairs: Array<
+          [
+            number,
+            keyof typeof hand.fingers
+          ]
+        > = [
+          [8, "index"],
+          [12, "middle"],
+          [16, "ring"],
+          [20, "pinky"]
+        ];
+
+        for (
+          const [
+            tipIndex,
+            fingerName
+          ] of pairs
+        ) {
+          const tip =
+            points[
+              tipIndex
+            ];
+
+          if (
+            !thumbTip ||
+            !tip
+          ) {
+            continue;
+          }
+
+          const finger =
+            hand.fingers[
+              fingerName
+            ];
+
+          const midX =
+            (
+              (
+                thumbTip.x +
+                tip.x
+              ) /
+              2
+            ) * width;
+
+          const midY =
+            (
+              (
+                thumbTip.y +
+                tip.y
+              ) /
+              2
+            ) * height;
+
+          const radius =
+            6 +
+            finger.strength *
+              10;
+
+          ctx.beginPath();
+
+          ctx.arc(
+            midX,
+            midY,
+            radius,
+            0,
+            Math.PI * 2
+          );
+
+          ctx.strokeStyle =
+            finger.touch
+              ? "#78c8ff"
+              : "rgba(255, 255, 255, 0.35)";
+
+          ctx.lineWidth =
+            finger.touch
+              ? 2
+              : 1;
+
+          ctx.stroke();
+        }
+      }
     }, []);
 
   /*
@@ -628,6 +903,9 @@ export default function Home() {
         null,
         performance.now()
       );
+
+      latestHandsRef.current =
+        [];
 
       setFrame(
         EMPTY_FRAME
@@ -852,6 +1130,15 @@ export default function Home() {
             result.primaryHand,
             after
           );
+
+          /*
+           * Store for the skeleton overlay.
+           * Drawn every animation frame in the
+           * render loop, updated here whenever
+           * a real detection completes.
+           */
+          latestHandsRef.current =
+            result.hands;
 
           /*
            * ------------------------------------------------
@@ -1218,6 +1505,50 @@ export default function Home() {
   }, []);
 
   /*
+   * Size the skeleton overlay canvas to the
+   * viewport.
+   *
+   * Deliberately NOT scaling for
+   * devicePixelRatio - on a weak GPU (this
+   * app has already had to fight for every
+   * millisecond of frame budget), rendering
+   * at native CSS pixel resolution instead of
+   * 2x/3x device pixels meaningfully cuts
+   * fill-rate cost for a HUD overlay like
+   * this. Slightly less crisp, meaningfully
+   * cheaper to redraw every frame.
+   */
+  useEffect(() => {
+    const resize = () => {
+      const canvas =
+        skeletonCanvasRef.current;
+
+      if (!canvas) {
+        return;
+      }
+
+      canvas.width =
+        window.innerWidth;
+
+      canvas.height =
+        window.innerHeight;
+    };
+
+    resize();
+
+    window.addEventListener(
+      "resize",
+      resize
+    );
+
+    return () =>
+      window.removeEventListener(
+        "resize",
+        resize
+      );
+  }, []);
+
+  /*
    * Refresh diagnostic numbers once per second.
    *
    * This is completely separate from the
@@ -1399,6 +1730,11 @@ export default function Home() {
               </>
             )}
           </section>
+
+          <canvas
+            ref={skeletonCanvasRef}
+            className="skeletonCanvas"
+          />
 
           <div
             ref={cursorRef}
