@@ -77,6 +77,17 @@ export class OneEuroFilter {
   private initialized =
     false;
 
+  /*
+   * The filter already computes a low-pass
+   * SMOOTHED derivative internally (used to
+   * adapt the cutoff). Expose it so callers
+   * can use it as a clean velocity signal
+   * instead of computing their own derivative
+   * from raw, noisy positions.
+   */
+  private lastDerivative =
+    0;
+
   constructor(
     options: OneEuroOptions
   ) {
@@ -125,6 +136,9 @@ export class OneEuroFilter {
         derivativeAlpha
       );
 
+    this.lastDerivative =
+      derivative;
+
     const cutoff =
       this.options.minCutoff +
       this.options.beta *
@@ -153,6 +167,10 @@ export class OneEuroFilter {
     return result;
   }
 
+  getVelocity() {
+    return this.lastDerivative;
+  }
+
   reset() {
     this.initialized =
       false;
@@ -161,6 +179,9 @@ export class OneEuroFilter {
       0;
 
     this.previousTime =
+      0;
+
+    this.lastDerivative =
       0;
 
     this.valueFilter.reset();
@@ -203,6 +224,13 @@ export class OneEuroPointFilter {
         point.y,
         timestampSeconds
       )
+    };
+  }
+
+  getVelocity() {
+    return {
+      x: this.x.getVelocity(),
+      y: this.y.getVelocity()
     };
   }
 
