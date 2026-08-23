@@ -1,4 +1,5 @@
 import { OneEuroPointFilter } from "./oneEuro";
+import { CursorPredictor } from "./predictor";
 import type { GestureHand } from "./types";
 
 export type GrabbableObject = {
@@ -17,8 +18,14 @@ export type GrabState = {
 const GRAB_THRESHOLD = 0.7;
 const RELEASE_THRESHOLD = 0.4;
 
-const OBJECT_FILTER_MIN_CUTOFF = 0.6;
-const OBJECT_FILTER_BETA = 0.02;
+/*
+ * Same lesson as the fingertip cursor: keep some
+ * baseline smoothing (minCutoff) for jitter-free
+ * rest, and rely on the predictor to glide between
+ * updates rather than cranking responsiveness alone.
+ */
+const OBJECT_FILTER_MIN_CUTOFF = 0.5;
+const OBJECT_FILTER_BETA = 0.04;
 const OBJECT_FILTER_D_CUTOFF = 1.0;
 
 function distance(ax: number, ay: number, bx: number, by: number) {
@@ -40,6 +47,13 @@ export class GrabManager {
     beta: OBJECT_FILTER_BETA,
     dCutoff: OBJECT_FILTER_D_CUTOFF
   });
+
+  /*
+   * Glides the held object between update() calls,
+   * the same way CursorPredictor glides the
+   * fingertip dot between MediaPipe detections.
+   */
+  private objectPredictor = new CursorPredictor();
 
   setObjects(objects: GrabbableObject[]) {
     this.objects = objects;
@@ -83,6 +97,7 @@ export class GrabManager {
         this.grabOffsetY = target.y - cursorPx.y;
 
         this.objectFilter.reset();
+        this.objectPredictor.clear();
       }
     }
 
@@ -119,6 +134,18 @@ export class GrabManager {
       if (object) {
         object.x = filtered.x;
         object.y = filtered.y;
+
+        /*
+         * Feed the predictor with the filter's own
+         * clean smoothed derivative, not a raw
+         * frame-to-frame difference - same jitter
+         * lesson as the fingertip cursor.
+         */
+        this.objectPredictor.update(
+          { x: filtered.x, y: filtered.y },
+          this.objectFilter.getVelocity(),
+          timestampMs
+        );
       }
     }
 
@@ -145,9 +172,24 @@ export class GrabManager {
     if (this.grabbedId) {
       this.grabbedId = null;
       this.objectFilter.reset();
+      this.objectPredictor.clear();
     }
 
     this.wasPinching = false;
+  }
+
+  /*
+   * Call this every animation frame (not just on
+   * every update() call) to get a glide-smoothed
+   * position for the currently grabbed object.
+   * Returns null when nothing is grabbed.
+   */
+  predict(nowMs: number) {
+    if (!this.grabbedId) {
+      return null;
+    }
+
+    return this.objectPredictor.predict(nowMs);
   }
 
   private currentState(): GrabState {
