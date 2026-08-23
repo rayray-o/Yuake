@@ -70,6 +70,7 @@ type Diagnostics = {
   jitter: number;
   loopMs: number;
   isolated: boolean;
+  processingWidth: number;
 };
 
 const EMPTY_FRAME:
@@ -95,7 +96,8 @@ const EMPTY_DIAGNOSTICS:
     videoDelayMs: 0,
     jitter: 0,
     loopMs: 0,
-    isolated: false
+    isolated: false,
+    processingWidth: 0
   };
 
 export default function Home() {
@@ -497,7 +499,11 @@ export default function Home() {
           typeof window !==
             "undefined" &&
           window.crossOriginIsolated ===
-            true
+            true,
+
+        processingWidth:
+          trackerRef.current?.getProcessingWidth() ??
+          0
       };
 
       diagnosticRef.current =
@@ -1683,6 +1689,14 @@ function DebugPanel({
             {diagnostics.isolated
               ? "YES"
               : "NO"}
+          </strong>
+        </div>
+
+        <div className="debugStat">
+          <span>PROC W</span>
+          <strong>
+            {diagnostics.processingWidth}
+            px
           </strong>
         </div>
 
